@@ -23,7 +23,7 @@
 //   )
 // }
 
-// app/dashboard/page.tsx
+// app/dashboard/page.tspx
 import React from "react";
 
 const DashboardPage = () => {

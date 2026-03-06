@@ -40,6 +40,17 @@ export default function Home() {
     });
   };
 
+  type FormChangeEvent = {
+    target: {
+      name: string;
+      value: string;
+    };
+  };
+  
+  const handleSelectChange = (name: string) => (value: string) => {
+    handleChange({ target: { name, value } } as unknown as React.ChangeEvent<HTMLSelectElement>);
+  };
+
   const createCampaign = async (): Promise<void> => {
     const res = await fetch("/api/createCampaign", {
       method: "POST",
@@ -85,8 +96,8 @@ export default function Home() {
       <br /><br />
 
       <Select
-        value={form.objective}
-        onValueChange={(value) => handleChange({ target: { name: "objective", value } })}
+  value={form.objective}
+  onValueChange={handleSelectChange("objective")}
       >
         <SelectTrigger className="w-[180px]">
           <SelectValue placeholder="Objective" />
@@ -104,8 +115,8 @@ export default function Home() {
       <br /><br />
 
       <Select
-        value={form.category}
-        onValueChange={(value) => handleChange({ target: { name: "category", value } })}
+  value={form.category}
+  onValueChange={handleSelectChange("category")}
       >
         <SelectTrigger className="w-[180px]">
           <SelectValue placeholder="Category" />
