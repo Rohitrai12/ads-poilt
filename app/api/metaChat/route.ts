@@ -13,6 +13,7 @@ You have access to tools to:
 - Pause, activate, or archive campaigns
 - Update campaign objective
 - Delete campaigns permanently
+- Create new campaigns
 
 Behavioral rules:
 1. Always fetch real data before making decisions — never guess at campaign names or performance.
@@ -109,6 +110,31 @@ const TOOLS = [
         confirmed: { type: "boolean", description: "Must be true — only delete if user explicitly confirmed" },
       },
       required: ["campaign_id", "campaign_name", "confirmed"],
+    },
+  },
+  {
+    name: "create_campaign",
+    description: "Create a new ad campaign in the ad account. Campaign starts as PAUSED so the user can review before activating.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Campaign name" },
+        objective: {
+          type: "string",
+          enum: ["OUTCOME_TRAFFIC", "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_ENGAGEMENT", "OUTCOME_AWARENESS", "OUTCOME_APP_PROMOTION"],
+          description: "Campaign objective",
+        },
+        special_ad_category: {
+          type: "string",
+          enum: ["NONE", "EMPLOYMENT", "HOUSING", "CREDIT"],
+          description: "Special ad category if applicable, otherwise NONE",
+        },
+        daily_budget_cents: {
+          type: "number",
+          description: "Optional daily budget in cents (e.g. 5000 = $50/day). If not provided, campaign is created without a budget.",
+        },
+      },
+      required: ["name", "objective", "special_ad_category"],
     },
   },
 ];
@@ -208,6 +234,31 @@ async function executeTool(
     }
     const url = `${base}/${campaign_id}?access_token=${encodeURIComponent(accessToken)}`;
     const res = await fetch(url, { method: "DELETE" });
+    return res.json();
+  }
+
+  if (name === "create_campaign") {
+    const { name: campaignName, objective, special_ad_category, daily_budget_cents } = input as {
+      name: string;
+      objective: string;
+      special_ad_category: string;
+      daily_budget_cents?: number;
+    };
+    const params = new URLSearchParams({
+      name: campaignName,
+      objective,
+      status: "PAUSED",
+      special_ad_categories: JSON.stringify([special_ad_category]),
+      access_token: accessToken,
+    });
+    if (daily_budget_cents) {
+      params.set("daily_budget", String(Math.round(daily_budget_cents)));
+    }
+    const res = await fetch(`${base}/act_${adAccountId}/campaigns`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params,
+    });
     return res.json();
   }
 
@@ -378,6 +429,8 @@ function formatToolCallLabel(name: string, input: ToolInput): string {
       return `Updating objective to ${input.objective} for campaign ${input.campaign_id}`;
     case "delete_campaign":
       return `⚠️ Deleting campaign "${input.campaign_name}" (${input.campaign_id}) permanently...`;
+    case "create_campaign":
+      return `Creating campaign "${input.name}" (${input.objective})...`;
     default:
       return `Calling ${name}...`;
   }
@@ -403,6 +456,8 @@ function formatToolResultLabel(name: string, result: unknown): string {
       return r?.success ? "Objective updated ✓" : `Response: ${JSON.stringify(r)}`;
     case "delete_campaign":
       return r?.success ? "Campaign deleted ✓" : `Response: ${JSON.stringify(r)}`;
+    case "create_campaign":
+      return r?.id ? `Campaign created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
     default:
       return "Done";
   }
