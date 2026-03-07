@@ -260,10 +260,12 @@ export default function MetaAdsChat() {
   };
 
   const SUGGESTIONS = [
-    "Show all my campaigns",
-    "Which campaign has the best ROAS?",
+    "Show all my campaigns and their budgets",
+    "Which campaign has the best ROAS last 30 days?",
+    "Show ad sets for my best campaign",
+    "Pause all underperforming campaigns",
     "Increase budget of my best campaign by 20%",
-    "Pause underperforming campaigns",
+    "Create a Traffic campaign called Summer Sale, $50/day, US targeting",
   ];
 
   return (
