@@ -22,7 +22,7 @@ You manage the full hierarchy: Campaigns → Ad Sets → Ads, plus Custom Audien
 CAMPAIGNS: list, get, create, update budget/status/objective, delete, insights
 AD SETS: list, create with targeting, update budget/status/targeting, insights
 ADS: list, update status
-AUDIENCES: list, create custom, create lookalike
+AUDIENCES: list, create custom (WEBSITE/CUSTOM/ENGAGEMENT subtypes), create lookalike
 BULK: pause or activate multiple campaigns at once
 
 Behavioral rules:
@@ -222,11 +222,32 @@ const TOOLS = [
   },
   {
     name: "create_custom_audience",
-    description: "Create a new empty custom audience. Customer data can be uploaded after creation.",
+    description: "Create a new custom audience. Use subtype WEBSITE for pixel-based retargeting (no file upload needed), CUSTOM for uploading customer lists (emails/phones), or ENGAGEMENT for people who engaged with your Facebook/Instagram content.",
     input_schema: {
       type: "object",
-      properties: { name: { type: "string" }, description: { type: "string" } },
-      required: ["name"],
+      properties: {
+        name: { type: "string" },
+        description: { type: "string" },
+        subtype: {
+          type: "string",
+          enum: ["WEBSITE", "ENGAGEMENT", "CUSTOM"],
+          description: "WEBSITE = pixel retargeting (most common, no upload needed). CUSTOM = upload customer list. ENGAGEMENT = page/video engagers.",
+        },
+        customer_file_source: {
+          type: "string",
+          enum: ["USER_PROVIDED_ONLY", "PARTNER_PROVIDED_ONLY", "BOTH_USER_AND_PARTNER_PROVIDED"],
+          description: "Required only when subtype is CUSTOM. Use USER_PROVIDED_ONLY if you collected the data yourself.",
+        },
+        pixel_id: {
+          type: "string",
+          description: "Required for WEBSITE subtype. The Meta Pixel ID to build the audience from.",
+        },
+        retention_days: {
+          type: "number",
+          description: "For WEBSITE audiences: how many days back to include visitors (e.g. 30, 60, 180). Default 30.",
+        },
+      },
+      required: ["name", "subtype"],
     },
   },
   {
@@ -405,9 +426,39 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
   }
 
   if (name === "create_custom_audience") {
-    const { name: n, description } = input as { name: string; description?: string };
-    const p = new URLSearchParams({ name: n, subtype: "CUSTOM", access_token: tok });
+    const { name: n, description, subtype, customer_file_source, pixel_id, retention_days } = input as {
+      name: string; description?: string; subtype: string;
+      customer_file_source?: string; pixel_id?: string; retention_days?: number;
+    };
+
+    const p = new URLSearchParams({ name: n, subtype, access_token: tok });
     if (description) p.set("description", description);
+
+    if (subtype === "CUSTOM") {
+      // customer_file_source is required by Meta for CUSTOM audiences
+      p.set("customer_file_source", customer_file_source ?? "USER_PROVIDED_ONLY");
+    }
+
+    if (subtype === "WEBSITE") {
+      if (!pixel_id) return { error: "pixel_id is required for WEBSITE audiences. Ask the user for their Meta Pixel ID." };
+      const days = retention_days ?? 30;
+      p.set("pixel_id", String(pixel_id));
+      p.set("rule", JSON.stringify({
+        inclusions: {
+          operator: "or",
+          rules: [{ event_sources: [{ id: String(pixel_id), type: "pixel" }], retention_seconds: days * 86400, filter: { operator: "and", filters: [{ field: "event", operator: "eq", value: "PageView" }] } }],
+        },
+      }));
+    }
+
+    if (subtype === "ENGAGEMENT") {
+      // Engagement audiences are created with object_id pointing to a Page or Instagram account
+      // We create a basic engagement audience shell — the user can refine in Ads Manager
+      p.set("rule", JSON.stringify({
+        inclusions: { operator: "or", rules: [{ retention_seconds: 30 * 86400, event_sources: [] }] },
+      }));
+    }
+
     return post(`${BASE}/${acct}/customaudiences`, p);
   }
 
