@@ -10,7 +10,6 @@
 !.yarn/releases
 !.yarn/versions
 
-/components/app-sidebar.tsx
 
 # testing
 /coverage
