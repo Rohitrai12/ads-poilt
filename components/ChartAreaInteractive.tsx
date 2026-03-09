@@ -30,13 +30,6 @@ import {
   ToggleGroupItem,
 } from "@/components/ui/toggle-group"
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface ChartAreaInteractiveProps {
-  accessToken: string
-  adAccountId: string // numeric, no act_ prefix
-}
-
 interface DayPoint {
   date: string   // "YYYY-MM-DD"
   spend: number  // dollars
@@ -112,7 +105,7 @@ function ChartSkeleton() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function ChartAreaInteractive({ accessToken, adAccountId }: ChartAreaInteractiveProps) {
+export function ChartAreaInteractive() {
   const isMobile = useIsMobile()
   const [timeRange, setTimeRange] = React.useState("90d")
   const [allData, setAllData] = React.useState<DayPoint[] | null>(null)
@@ -121,14 +114,41 @@ export function ChartAreaInteractive({ accessToken, adAccountId }: ChartAreaInte
 
   // Fetch 90 days once — we slice client-side for the toggle
   React.useEffect(() => {
-    if (!accessToken || !adAccountId) return
-    setLoading(true)
-    setError("")
-    fetchDailyInsights(accessToken, adAccountId, 90)
-      .then(setAllData)
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false))
-  }, [accessToken, adAccountId])
+    if (typeof window === "undefined") return
+
+    const raw = window.localStorage.getItem("meta_ads_auth")
+    if (!raw) return
+
+    try {
+      setLoading(true)
+      setError("")
+      const saved = JSON.parse(raw) as {
+        accessToken?: string
+        accounts?: { id: string }[]
+        selectedAccount?: { id: string } | null
+      }
+
+      const accessToken = saved.accessToken
+      const account =
+        saved.selectedAccount ??
+        (Array.isArray(saved.accounts) ? saved.accounts[0] : null)
+
+      if (!accessToken || !account?.id) {
+        setLoading(false)
+        return
+      }
+
+      const adAccountId = account.id.replace(/^act_/, "")
+
+      fetchDailyInsights(accessToken, adAccountId, 90)
+        .then(setAllData)
+        .catch((e) => setError(String(e)))
+        .finally(() => setLoading(false))
+    } catch (e) {
+      setError(String(e))
+      setLoading(false)
+    }
+  }, [])
 
   React.useEffect(() => {
     if (isMobile) setTimeRange("7d")
