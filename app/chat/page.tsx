@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,9 +29,17 @@ type Step = {
 type Message = {
   id: string;
   role: "user" | "assistant";
-  content: string;        // plain text for history
-  steps?: Step[];         // streamed steps for assistant
+  content: string;
+  steps?: Step[];
   pending?: boolean;
+};
+
+type AdAccount = {
+  id: string;
+  name: string;
+  account_status: number;
+  currency: string;
+  timezone_name: string;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -39,12 +48,33 @@ const uid = () => Math.random().toString(36).slice(2);
 
 const TOOL_ICONS: Record<string, string> = {
   list_campaigns: "⬡",
+  get_campaign: "◈",
   get_campaign_insights: "◈",
+  create_campaign: "◆",
   update_campaign_budget: "◎",
   update_campaign_status: "◉",
+  update_campaign_objective: "◎",
+  delete_campaign: "⚠",
+  bulk_update_campaign_status: "◉",
+  list_adsets: "⬡",
+  create_adset: "◆",
+  update_adset_targeting: "◎",
+  update_adset_budget: "◎",
+  update_adset_status: "◉",
+  get_adset_insights: "◈",
+  list_ads: "⬡",
+  update_ad_status: "◉",
+  list_custom_audiences: "⬡",
+  create_custom_audience: "◆",
+  create_lookalike_audience: "◆",
 };
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+const STATUS_LABELS: Record<number, string> = {
+  1: "Active", 2: "Disabled", 3: "Unsettled", 7: "Pending review",
+  8: "Pending closure", 9: "In grace period", 101: "Temporarily unavailable", 201: "Closed",
+};
+
+// ─── Step components ──────────────────────────────────────────────────────────
 
 function ToolCallStep({ step }: { step: Step }) {
   const icon = TOOL_ICONS[step.tool ?? ""] ?? "◆";
@@ -69,12 +99,7 @@ function ToolResultStep({ step }: { step: Step }) {
       >
         {isError ? "✗" : icon} {step.tool ?? "result"}
       </Badge>
-      <div
-        className={
-          "min-w-0 whitespace-pre-wrap break-words " +
-          (isError ? "text-destructive" : "text-muted-foreground")
-        }
-      >
+      <div className={"min-w-0 whitespace-pre-wrap break-words " + (isError ? "text-destructive" : "text-muted-foreground")}>
         {step.text}
       </div>
     </div>
@@ -82,17 +107,13 @@ function ToolResultStep({ step }: { step: Step }) {
 }
 
 function TextStep({ step }: { step: Step }) {
-  return (
-    <div className="whitespace-pre-wrap text-sm text-foreground">{step.text}</div>
-  );
+  return <div className="whitespace-pre-wrap text-sm text-foreground">{step.text}</div>;
 }
 
 function AssistantMessage({ msg }: { msg: Message }) {
   const steps = msg.steps ?? [];
   const textSteps = steps.filter((s) => s.type === "text");
-  const actionSteps = steps.filter(
-    (s) => s.type === "tool_call" || s.type === "tool_result"
-  );
+  const actionSteps = steps.filter((s) => s.type === "tool_call" || s.type === "tool_result");
   const errorSteps = steps.filter((s) => s.type === "error");
 
   return (
@@ -100,43 +121,28 @@ function AssistantMessage({ msg }: { msg: Message }) {
       <Card className="border-border/60">
         <CardHeader className="space-y-1 py-3">
           <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="font-mono text-[10px]">
-              META ADS AI
-            </Badge>
-            {msg.pending && (
-              <Badge variant="outline" className="font-mono text-[10px]">
-                PROCESSING
-              </Badge>
-            )}
+            <Badge variant="secondary" className="font-mono text-[10px]">META ADS AI</Badge>
+            {msg.pending && <Badge variant="outline" className="font-mono text-[10px]">PROCESSING</Badge>}
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
           {actionSteps.length > 0 && (
             <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
               {actionSteps.map((step, i) =>
-                step.type === "tool_call" ? (
-                  <ToolCallStep key={i} step={step} />
-                ) : (
-                  <ToolResultStep key={i} step={step} />
-                )
+                step.type === "tool_call"
+                  ? <ToolCallStep key={i} step={step} />
+                  : <ToolResultStep key={i} step={step} />
               )}
             </div>
           )}
-
           {textSteps.length > 0 && (
             <div className="space-y-2">
-              {textSteps.map((step, i) => (
-                <TextStep key={i} step={step} />
-              ))}
+              {textSteps.map((step, i) => <TextStep key={i} step={step} />)}
             </div>
           )}
-
           {errorSteps.map((step, i) => (
-            <div key={i} className="text-sm text-destructive">
-              {step.text}
-            </div>
+            <div key={i} className="text-sm text-destructive">{step.text}</div>
           ))}
-
           {msg.pending && steps.length === 0 && (
             <div className="text-sm text-muted-foreground">
               Thinking<span className="animate-pulse">…</span>
@@ -155,62 +161,248 @@ function UserMessage({ msg }: { msg: Message }) {
         <CardHeader className="space-y-1 py-3">
           <Badge className="w-fit font-mono text-[10px]">YOU</Badge>
         </CardHeader>
-        <CardContent className="whitespace-pre-wrap text-sm">
-          {msg.content}
-        </CardContent>
+        <CardContent className="whitespace-pre-wrap text-sm">{msg.content}</CardContent>
       </Card>
     </div>
   );
 }
 
+// ─── Facebook Connect Screen ──────────────────────────────────────────────────
+
+function ConnectScreen({ error }: { error: string }) {
+  const [loading, setLoading] = useState(false);
+
+  const handleConnect = () => {
+    const appId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID;
+    if (!appId) {
+      alert("NEXT_PUBLIC_FACEBOOK_APP_ID is not set in .env.local");
+      return;
+    }
+    setLoading(true);
+    const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
+    const scope = encodeURIComponent("ads_management,ads_read,business_management");
+    window.location.href = `https://www.facebook.com/v25.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code`;
+  };
+
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-8 px-4 py-12">
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#1877f2] shadow-[0_0_60px_rgba(24,119,242,0.3)]">
+        <FacebookIcon size={32} color="white" />
+      </div>
+
+      <div className="text-center">
+        <h2 className="text-xl font-semibold">Connect your Meta Ads account</h2>
+        <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+          Manage campaigns, budgets, audiences, and performance — all through natural language conversation.
+        </p>
+      </div>
+
+      <Card className="w-full max-w-sm border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Permissions requested</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {[
+            ["ads_management", "Create and edit campaigns, ad sets, ads"],
+            ["ads_read", "View performance insights and reporting"],
+            ["business_management", "Access your ad accounts"],
+          ].map(([perm, desc]) => (
+            <div key={perm} className="flex items-start gap-2">
+              <div className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />
+              <div>
+                <span className="font-mono text-xs text-foreground">{perm}</span>
+                <span className="text-xs text-muted-foreground"> — {desc}</span>
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {error && (
+        <div className="w-full max-w-sm rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-center font-mono text-xs text-destructive">
+          Auth error: {error}
+        </div>
+      )}
+
+      <Button size="lg" onClick={handleConnect} disabled={loading} className="gap-2 bg-[#1877f2] hover:bg-[#1565d8]">
+        <FacebookIcon size={16} color="white" />
+        {loading ? "Redirecting…" : "Continue with Facebook"}
+      </Button>
+
+      <p className="max-w-xs text-center font-mono text-[10px] text-muted-foreground">
+        Requires <code>NEXT_PUBLIC_FACEBOOK_APP_ID</code>, <code>FACEBOOK_APP_ID</code>, and <code>FACEBOOK_APP_SECRET</code> in .env.local
+      </p>
+    </div>
+  );
+}
+
+// ─── Account Picker ───────────────────────────────────────────────────────────
+
+function AccountPicker({ accounts, onSelect }: { accounts: AdAccount[]; onSelect: (a: AdAccount) => void }) {
+  const active = accounts.filter((a) => a.account_status === 1);
+  const inactive = accounts.filter((a) => a.account_status !== 1);
+
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
+      <div className="w-full max-w-md">
+        <h2 className="text-lg font-semibold">Select an ad account</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {accounts.length} account{accounts.length !== 1 ? "s" : ""} found on your Facebook profile
+        </p>
+      </div>
+
+      <div className="flex w-full max-w-md flex-col gap-2">
+        {[...active, ...inactive].map((acct) => {
+          const numericId = acct.id.replace("act_", "");
+          const isActive = acct.account_status === 1;
+          return (
+            <button
+              key={acct.id}
+              onClick={() => isActive && onSelect(acct)}
+              disabled={!isActive}
+              className="group w-full rounded-lg border border-border/60 bg-card px-4 py-3 text-left transition-all hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">{acct.name}</span>
+                <Badge
+                  variant={isActive ? "secondary" : "destructive"}
+                  className="font-mono text-[10px]"
+                >
+                  {STATUS_LABELS[acct.account_status] ?? "Unknown"}
+                </Badge>
+              </div>
+              <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                {acct.currency} · {acct.timezone_name} · ID: {numericId}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Facebook SVG icon ────────────────────────────────────────────────────────
+
+function FacebookIcon({ size = 20, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+    </svg>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function MetaAdsChat({ embedded = false }: { embedded?: boolean }) {
+function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [credentials, setCredentials] = useState({
-    accessToken: "",
-    adAccountId: "",
-  });
-  const [settingsOpen, setSettingsOpen] = useState(true);
+  const [phase, setPhase] = useState<"connect" | "pick" | "chat">("connect");
+  const [accessToken, setAccessToken] = useState("");
+  const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [selectedAccount, setSelectedAccount] = useState<AdAccount | null>(null);
+  const [authError, setAuthError] = useState("");
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const credentialsSet =
-    credentials.accessToken.length > 0 && credentials.adAccountId.length > 0;
+  // Rehydrate from localStorage so we don't ask every time
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // If URL params are present, let the OAuth handler below take precedence.
+    if (searchParams.get("fb_token") || searchParams.get("fb_accounts")) return;
+    try {
+      const raw = window.localStorage.getItem("meta_ads_auth");
+      if (!raw) return;
+      const saved: {
+        accessToken: string;
+        accounts: AdAccount[];
+        selectedAccount?: AdAccount | null;
+      } = JSON.parse(raw);
+      if (!saved.accessToken || !saved.accounts?.length) return;
+      setAccessToken(saved.accessToken);
+      setAccounts(saved.accounts);
+      if (saved.selectedAccount) {
+        setSelectedAccount(saved.selectedAccount);
+        setPhase("chat");
+      } else {
+        setPhase(saved.accounts.length === 1 ? "chat" : "pick");
+        if (saved.accounts.length === 1) setSelectedAccount(saved.accounts[0]);
+      }
+    } catch {
+      // ignore
+    }
+  }, [searchParams]);
+
+  // Handle OAuth callback params ─────────────────────────────────────────────
+  useEffect(() => {
+    const token = searchParams.get("fb_token");
+    const acctJson = searchParams.get("fb_accounts");
+    const error = searchParams.get("fb_error");
+
+    if (error) {
+      setAuthError(decodeURIComponent(error));
+      router.replace("/dashboard/chat");
+      return;
+    }
+
+    if (token && acctJson) {
+      try {
+        const parsed: AdAccount[] = JSON.parse(acctJson);
+        setAccessToken(token);
+        setAccounts(parsed);
+        if (parsed.length === 1 && parsed[0].account_status === 1) {
+          setSelectedAccount(parsed[0]);
+          setPhase("chat");
+        } else {
+          setPhase("pick");
+        }
+      } catch {
+        setAuthError("Failed to parse account data from Facebook");
+      }
+      router.replace("/dashboard/chat");
+    }
+  }, [searchParams, router]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const handleAccountSelect = (acct: AdAccount) => {
+    setSelectedAccount(acct);
+    setPhase("chat");
+    setTimeout(() => inputRef.current?.focus(), 100);
+  };
+
+  const disconnect = () => {
+    setAccessToken("");
+    setSelectedAccount(null);
+    setAccounts([]);
+    setMessages([]);
+    setPhase("connect");
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("meta_ads_auth");
+    }
+  };
+
+  // Send message ─────────────────────────────────────────────────────────────
   const sendMessage = useCallback(async () => {
-    if (!input.trim() || loading || !credentialsSet) return;
+    if (!input.trim() || loading || !accessToken || !selectedAccount) return;
 
-    const userMsg: Message = {
-      id: uid(),
-      role: "user",
-      content: input.trim(),
-    };
-
-    const assistantMsg: Message = {
-      id: uid(),
-      role: "assistant",
-      content: "",
-      steps: [],
-      pending: true,
-    };
+    const adAccountId = selectedAccount.id.replace("act_", "");
+    const userMsg: Message = { id: uid(), role: "user", content: input.trim() };
+    const assistantMsg: Message = { id: uid(), role: "assistant", content: "", steps: [], pending: true };
 
     const historyForApi = [
       ...messages.map((m) => ({
         role: m.role,
-        content:
-          m.role === "assistant"
-            ? m.steps
-                ?.filter((s) => s.type === "text")
-                .map((s) => s.text)
-                .join("\n") || m.content
-            : m.content,
+        content: m.role === "assistant"
+          ? m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content
+          : m.content,
       })),
       { role: "user", content: input.trim() },
     ];
@@ -223,15 +415,10 @@ export function MetaAdsChat({ embedded = false }: { embedded?: boolean }) {
       const res = await fetch("/api/metaChat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: historyForApi,
-          accessToken: credentials.accessToken,
-          adAccountId: credentials.adAccountId,
-        }),
+        body: JSON.stringify({ messages: historyForApi, accessToken, adAccountId }),
       });
 
       if (!res.body) throw new Error("No response body");
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -239,7 +426,6 @@ export function MetaAdsChat({ embedded = false }: { embedded?: boolean }) {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
@@ -249,56 +435,41 @@ export function MetaAdsChat({ embedded = false }: { embedded?: boolean }) {
           try {
             const step: Step = JSON.parse(line);
             if (step.type === "done") continue;
-
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsg.id
-                  ? {
-                      ...m,
-                      steps: [...(m.steps ?? []), step],
-                      content:
-                        step.type === "text"
-                          ? (m.content ? m.content + "\n" : "") + step.text
-                          : m.content,
-                    }
-                  : m
-              )
-            );
-          } catch {
-            // ignore malformed
-          }
+            setMessages((prev) => prev.map((m) =>
+              m.id === assistantMsg.id
+                ? { ...m, steps: [...(m.steps ?? []), step], content: step.type === "text" ? (m.content ? m.content + "\n" : "") + step.text : m.content }
+                : m
+            ));
+          } catch { /* ignore malformed */ }
         }
       }
     } catch (err) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMsg.id
-            ? {
-                ...m,
-                steps: [
-                  ...(m.steps ?? []),
-                  { type: "error", text: "Connection error: " + String(err) },
-                ],
-              }
-            : m
-        )
-      );
+      setMessages((prev) => prev.map((m) =>
+        m.id === assistantMsg.id
+          ? { ...m, steps: [...(m.steps ?? []), { type: "error", text: "Connection error: " + String(err) }] }
+          : m
+      ));
     } finally {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMsg.id ? { ...m, pending: false } : m
-        )
-      );
+      setMessages((prev) => prev.map((m) => m.id === assistantMsg.id ? { ...m, pending: false } : m));
       setLoading(false);
       inputRef.current?.focus();
     }
-  }, [input, loading, credentialsSet, credentials, messages]);
+  }, [input, loading, accessToken, selectedAccount, messages]);
+
+  // Persist auth to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!accessToken || !accounts.length) return;
+    const payload = {
+      accessToken,
+      accounts,
+      selectedAccount,
+    };
+    window.localStorage.setItem("meta_ads_auth", JSON.stringify(payload));
+  }, [accessToken, accounts, selectedAccount]);
 
   const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
   const SUGGESTIONS = [
@@ -307,564 +478,122 @@ export function MetaAdsChat({ embedded = false }: { embedded?: boolean }) {
     "Show ad sets for my best campaign",
     "Pause all underperforming campaigns",
     "Increase budget of my best campaign by 20%",
-    "Create a Traffic campaign called Summer Sale, $50/day, US targeting",
+    "List my custom audiences",
   ];
 
-  const styles = `
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
-
-        ${embedded ? "" : "*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }"}
-
-        ${embedded ? "" : "body { background: #080c10; }"}
-
-        .app {
-          display: flex;
-          flex-direction: column;
-          height: ${embedded ? "100%" : "100vh"};
-          background: #080c10;
-          color: #c9d1d9;
-          font-family: 'IBM Plex Sans', sans-serif;
-        }
-
-        /* ─── Header ─── */
-        .header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0 24px;
-          height: 52px;
-          border-bottom: 1px solid #21262d;
-          background: #0d1117;
-          flex-shrink: 0;
-        }
-        .header-brand {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .header-logo {
-          width: 28px;
-          height: 28px;
-          background: linear-gradient(135deg, #1877f2, #0b5fcc);
-          border-radius: 6px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 14px;
-          font-weight: 700;
-          color: white;
-          font-family: 'IBM Plex Mono', monospace;
-        }
-        .header-title {
-          font-size: 13px;
-          font-weight: 600;
-          letter-spacing: 0.08em;
-          color: #e6edf3;
-          text-transform: uppercase;
-        }
-        .header-sub {
-          font-size: 11px;
-          color: #6e7681;
-          letter-spacing: 0.04em;
-        }
-        .settings-btn {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 5px 12px;
-          background: transparent;
-          border: 1px solid #30363d;
-          border-radius: 6px;
-          color: #8b949e;
-          font-size: 12px;
-          font-family: 'IBM Plex Mono', monospace;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .settings-btn:hover {
-          border-color: #58a6ff;
-          color: #58a6ff;
-        }
-        .cred-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: ${credentialsSet ? "#3fb950" : "#f0883e"};
-        }
-
-        /* ─── Settings Panel ─── */
-        .settings-panel {
-          background: #0d1117;
-          border-bottom: 1px solid #21262d;
-          overflow: hidden;
-          transition: max-height 0.2s ease;
-          flex-shrink: 0;
-        }
-        .settings-inner {
-          padding: 16px 24px;
-          display: flex;
-          gap: 12px;
-          align-items: flex-end;
-          flex-wrap: wrap;
-        }
-        .settings-field {
-          display: flex;
-          flex-direction: column;
-          gap: 5px;
-          flex: 1;
-          min-width: 200px;
-        }
-        .settings-label {
-          font-size: 10px;
-          letter-spacing: 0.1em;
-          color: #6e7681;
-          text-transform: uppercase;
-          font-family: 'IBM Plex Mono', monospace;
-        }
-        .settings-input {
-          background: #161b22;
-          border: 1px solid #30363d;
-          border-radius: 6px;
-          padding: 8px 12px;
-          color: #e6edf3;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 12px;
-          outline: none;
-          transition: border-color 0.15s;
-        }
-        .settings-input:focus { border-color: #58a6ff; }
-        .settings-input::placeholder { color: #484f58; }
-        .settings-status {
-          font-size: 11px;
-          font-family: 'IBM Plex Mono', monospace;
-          padding: 8px 14px;
-          border-radius: 6px;
-          border: 1px solid ${credentialsSet ? "#238636" : "#6e7681"};
-          color: ${credentialsSet ? "#3fb950" : "#6e7681"};
-          background: ${credentialsSet ? "#0d2d1a" : "transparent"};
-          white-space: nowrap;
-        }
-
-        /* ─── Chat Area ─── */
-        .chat-area {
-          flex: 1;
-          overflow-y: auto;
-          padding: 24px;
-          display: flex;
-          flex-direction: column;
-          gap: 24px;
-          scroll-behavior: smooth;
-        }
-        .chat-area::-webkit-scrollbar { width: 4px; }
-        .chat-area::-webkit-scrollbar-track { background: transparent; }
-        .chat-area::-webkit-scrollbar-thumb { background: #21262d; border-radius: 2px; }
-
-        /* ─── Empty State ─── */
-        .empty-state {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 32px;
-          padding: 40px;
-        }
-        .empty-icon {
-          width: 56px;
-          height: 56px;
-          background: linear-gradient(135deg, #1877f2 0%, #0b5fcc 100%);
-          border-radius: 14px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 26px;
-          font-family: 'IBM Plex Mono', monospace;
-          font-weight: 700;
-          color: white;
-          box-shadow: 0 0 40px rgba(24,119,242,0.25);
-        }
-        .empty-title {
-          font-size: 18px;
-          font-weight: 600;
-          color: #e6edf3;
-          text-align: center;
-        }
-        .empty-desc {
-          font-size: 13px;
-          color: #6e7681;
-          text-align: center;
-          max-width: 400px;
-          line-height: 1.6;
-        }
-        .suggestions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          justify-content: center;
-          max-width: 520px;
-        }
-        .suggestion-btn {
-          padding: 7px 14px;
-          background: #161b22;
-          border: 1px solid #30363d;
-          border-radius: 20px;
-          color: #8b949e;
-          font-size: 12px;
-          font-family: 'IBM Plex Mono', monospace;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .suggestion-btn:hover {
-          border-color: #58a6ff;
-          color: #58a6ff;
-          background: #0d1f35;
-        }
-
-        /* ─── Messages ─── */
-        .msg-assistant, .msg-user {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          max-width: 760px;
-          width: 100%;
-        }
-        .msg-user { align-self: flex-end; align-items: flex-end; }
-        .msg-assistant { align-self: flex-start; }
-
-        .msg-label {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .label-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-        }
-        .ai-dot { background: #58a6ff; }
-        .user-dot { background: #3fb950; }
-        .label-text {
-          font-size: 10px;
-          letter-spacing: 0.1em;
-          font-family: 'IBM Plex Mono', monospace;
-          color: #6e7681;
-          text-transform: uppercase;
-        }
-        .pending-badge {
-          font-size: 9px;
-          letter-spacing: 0.1em;
-          font-family: 'IBM Plex Mono', monospace;
-          color: #f0883e;
-          border: 1px solid #f0883e40;
-          padding: 1px 6px;
-          border-radius: 3px;
-          animation: pulse 1.4s ease-in-out infinite;
-        }
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-
-        .msg-body {
-          background: #0d1117;
-          border: 1px solid #21262d;
-          border-radius: 10px;
-          padding: 14px 16px;
-          font-size: 13.5px;
-          line-height: 1.65;
-          color: #c9d1d9;
-        }
-        .user-body {
-          background: #0d1f35;
-          border-color: #1f4a7a;
-          color: #e6edf3;
-          text-align: right;
-        }
-
-        /* ─── Action Log ─── */
-        .action-log {
-          margin-bottom: 12px;
-          border: 1px solid #21262d;
-          border-radius: 6px;
-          overflow: hidden;
-          background: #080c10;
-        }
-        .step-tool-call, .step-tool-result {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 7px 12px;
-          font-size: 12px;
-          font-family: 'IBM Plex Mono', monospace;
-          border-bottom: 1px solid #161b22;
-        }
-        .step-tool-call:last-child, .step-tool-result:last-child {
-          border-bottom: none;
-        }
-        .step-tool-call {
-          color: #8b949e;
-        }
-        .step-tool-result {
-          color: #3fb950;
-        }
-        .step-tool-result.step-error {
-          color: #f85149;
-        }
-        .step-icon {
-          color: #58a6ff;
-          font-size: 10px;
-          flex-shrink: 0;
-        }
-        .step-tool-result .step-icon { color: #3fb950; }
-        .step-tool-result.step-error .step-icon { color: #f85149; }
-        .step-tool-name {
-          color: #58a6ff;
-          flex-shrink: 0;
-          font-size: 11px;
-        }
-        .step-tool-text {
-          color: #6e7681;
-        }
-        .step-result-text { color: inherit; }
-
-        .step-text { }
-        .step-text-content {
-          white-space: pre-wrap;
-        }
-        .step-error-text {
-          color: #f85149;
-          font-family: 'IBM Plex Mono', monospace;
-          font-size: 12px;
-        }
-
-        /* ─── Thinking dots ─── */
-        .thinking-dots {
-          display: flex;
-          gap: 5px;
-          align-items: center;
-          height: 20px;
-        }
-        .thinking-dots span {
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background: #58a6ff;
-          animation: bounce 1.2s ease-in-out infinite;
-        }
-        .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
-        .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes bounce {
-          0%, 100% { opacity: 0.3; transform: translateY(0); }
-          50% { opacity: 1; transform: translateY(-3px); }
-        }
-
-        /* ─── Input Bar ─── */
-        .input-bar {
-          padding: 16px 24px;
-          border-top: 1px solid #21262d;
-          background: #0d1117;
-          display: flex;
-          gap: 10px;
-          flex-shrink: 0;
-        }
-        .chat-input {
-          flex: 1;
-          background: #161b22;
-          border: 1px solid #30363d;
-          border-radius: 8px;
-          padding: 10px 14px;
-          color: #e6edf3;
-          font-family: 'IBM Plex Sans', sans-serif;
-          font-size: 14px;
-          outline: none;
-          transition: border-color 0.15s;
-        }
-        .chat-input:focus { border-color: #58a6ff; }
-        .chat-input::placeholder { color: #484f58; }
-        .chat-input:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .send-btn {
-          padding: 10px 18px;
-          background: #1877f2;
-          border: none;
-          border-radius: 8px;
-          color: white;
-          font-size: 13px;
-          font-family: 'IBM Plex Mono', monospace;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.15s;
-          white-space: nowrap;
-          letter-spacing: 0.04em;
-        }
-        .send-btn:hover:not(:disabled) { background: #1d6fd8; }
-        .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-        .input-hint {
-          font-size: 11px;
-          color: #484f58;
-          font-family: 'IBM Plex Mono', monospace;
-          text-align: center;
-          padding-bottom: 4px;
-        }
-      `
-
   return (
-    <div
-      className={
-        "flex min-h-0 flex-col bg-background text-foreground " +
-        (embedded ? "flex-1" : "h-[100svh]")
-      }
-    >
+    <div className={"flex min-h-0 flex-col bg-background text-foreground " + (embedded ? "flex-1" : "h-[100svh]")}>
+
+      {/* Header */}
       <div className="flex items-center justify-between gap-2 px-4 py-3 md:px-6">
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium">Chat</div>
-          <div className="truncate text-xs text-muted-foreground">
-            Meta Ads AI assistant
-          </div>
+          <div className="truncate text-sm font-medium">Meta Ads AI</div>
+          <div className="truncate text-xs text-muted-foreground">Conversational campaign manager</div>
         </div>
         <div className="flex items-center gap-2">
-          <Badge
-            variant={credentialsSet ? "secondary" : "outline"}
-            className="font-mono text-[10px]"
-          >
-            {credentialsSet ? "CONNECTED" : "NOT SET"}
-          </Badge>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSettingsOpen((o) => !o)}
-          >
-            {settingsOpen ? "Hide settings" : "Settings"}
-          </Button>
+          {phase === "chat" && selectedAccount ? (
+            <>
+              <Badge variant="secondary" className="hidden gap-1.5 font-mono text-[10px] sm:flex">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500" />
+                {selectedAccount.name}
+              </Badge>
+              <Button variant="outline" size="sm" onClick={disconnect}>
+                Disconnect
+              </Button>
+            </>
+          ) : (
+            <Badge variant="outline" className="font-mono text-[10px]">
+              {phase === "connect" ? "NOT CONNECTED" : "SELECTING ACCOUNT"}
+            </Badge>
+          )}
         </div>
       </div>
       <Separator />
 
-      {settingsOpen && (
-        <div className="px-4 py-4 md:px-6">
-          <Card className="border-border/60">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Credentials</CardTitle>
-              <CardDescription className="text-xs">
-                These are used to run actions against your Meta Ads account.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-2">
-                  <div className="text-xs font-medium">Access token</div>
-                  <Input
-                    type="password"
-                    placeholder="EAAxxxxxxxxx..."
-                    value={credentials.accessToken}
-                    onChange={(e) =>
-                      setCredentials((c) => ({
-                        ...c,
-                        accessToken: e.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <div className="text-xs font-medium">Ad account ID</div>
-                  <Input
-                    type="text"
-                    placeholder="act_123456789 or 123456789"
-                    value={credentials.adAccountId}
-                    onChange={(e) =>
-                      setCredentials((c) => ({
-                        ...c,
-                        adAccountId: e.target.value.replace(/^act_/, ""),
-                      }))
-                    }
-                  />
-                </div>
-              </div>
-              <div className="mt-3 text-xs text-muted-foreground">
-                Status: {credentialsSet ? "Ready" : "Not configured"}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      {/* Connect screen */}
+      {phase === "connect" && <ConnectScreen error={authError} />}
 
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-4 md:px-6">
-        {messages.length === 0 ? (
-          <Card className="border-border/60">
-            <CardHeader>
-              <CardTitle className="text-base">Meta Ads AI Assistant</CardTitle>
-              <CardDescription>
-                Manage your campaigns with natural language. Analyze performance,
-                adjust budgets, and control campaign status through conversation.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="text-sm font-medium">Try one of these</div>
-              <div className="flex flex-wrap gap-2">
-                {SUGGESTIONS.map((s) => (
-                  <Button
-                    key={s}
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setInput(s);
-                      inputRef.current?.focus();
-                    }}
-                  >
-                    {s}
-                  </Button>
-                ))}
+      {/* Account picker */}
+      {phase === "pick" && <AccountPicker accounts={accounts} onSelect={handleAccountSelect} />}
+
+      {/* Chat */}
+      {phase === "chat" && (
+        <>
+          <div className="min-h-0 flex-1 overflow-auto px-4 py-4 md:px-6">
+            {messages.length === 0 ? (
+              <Card className="border-border/60">
+                <CardHeader>
+                  <CardTitle className="text-base">
+                    Ready to manage your ads
+                  </CardTitle>
+                  <CardDescription>
+                    Connected to <strong>{selectedAccount?.name}</strong>. Ask anything about your campaigns, ad sets, or audiences.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="text-sm font-medium">Try one of these</div>
+                  <div className="flex flex-wrap gap-2">
+                    {SUGGESTIONS.map((s) => (
+                      <Button
+                        key={s}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => { setInput(s); inputRef.current?.focus(); }}
+                      >
+                        {s}
+                      </Button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-4">
+                {messages.map((msg) =>
+                  msg.role === "user"
+                    ? <UserMessage key={msg.id} msg={msg} />
+                    : <AssistantMessage key={msg.id} msg={msg} />
+                )}
+                <div ref={bottomRef} />
               </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-4">
-            {messages.map((msg) =>
-              msg.role === "user" ? (
-                <UserMessage key={msg.id} msg={msg} />
-              ) : (
-                <AssistantMessage key={msg.id} msg={msg} />
-              )
             )}
-            <div ref={bottomRef} />
           </div>
-        )}
-      </div>
 
-      <Separator />
-      <div className="px-4 py-4 md:px-6">
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <Input
-              ref={inputRef}
-              placeholder={
-                credentialsSet
-                  ? "Ask about your campaigns…"
-                  : "Open settings and set credentials first"
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKey}
-              disabled={loading || !credentialsSet}
-            />
-            <Button
-              onClick={sendMessage}
-              disabled={loading || !input.trim() || !credentialsSet}
-            >
-              {loading ? "Running…" : "Send"}
-            </Button>
+          <Separator />
+          <div className="px-4 py-4 md:px-6">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <Input
+                  ref={inputRef}
+                  placeholder="Ask about your campaigns…"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKey}
+                  disabled={loading}
+                />
+                <Button onClick={sendMessage} disabled={loading || !input.trim()}>
+                  {loading ? "Running…" : "Send"}
+                </Button>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Press Enter to send. Actions are executed immediately against your live account.
+              </div>
+            </div>
           </div>
-          <div className="text-xs text-muted-foreground">
-            Press Enter to send. Actions are executed immediately against your live account.
-          </div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }
 
+export function MetaAdsChat({ embedded = false }: { embedded?: boolean }) {
+  return (
+    <Suspense>
+      <MetaAdsChatInner embedded={embedded} />
+    </Suspense>
+  );
+}
+
 export default function MetaAdsChatPage() {
-  return <MetaAdsChat />
+  return <MetaAdsChat />;
 }

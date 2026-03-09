@@ -19,6 +19,7 @@ import {
 import { Input } from "@/components/ui/input"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { FacebookIcon } from "lucide-react"
 
 export function LoginForm({
   className,
@@ -106,6 +107,33 @@ export function LoginForm({
               <Field>
                 <Button type="submit" disabled={loading}>
                   {loading ? "Logging in..." : "Login"}
+                </Button>
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-xs text-muted-foreground">or</span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-3 flex w-full items-center justify-center gap-2"
+                  onClick={() => {
+                    const appId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID
+                    if (!appId) {
+                      alert("NEXT_PUBLIC_FACEBOOK_APP_ID is not set in .env.local")
+                      return
+                    }
+                    const redirectUri = encodeURIComponent(
+                      `${window.location.origin}/api/auth/facebook/callback`
+                    )
+                    const scope = encodeURIComponent(
+                      "ads_management,ads_read,business_management"
+                    )
+                    window.location.href = `https://www.facebook.com/v25.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code`
+                  }}
+                >
+                  <FacebookIcon className="h-4 w-4" />
+                  <span>Connect with Facebook</span>
                 </Button>
                 <FieldDescription className="text-center">
                   Don&apos;t have an account? <Link href="/sign-up">Sign up</Link>

@@ -21,7 +21,7 @@ You manage the full hierarchy: Campaigns → Ad Sets → Ads, plus Custom Audien
 
 CAMPAIGNS: list, get, create, update budget/status/objective, delete, insights
 AD SETS: list, create with targeting, update budget/status/targeting, insights
-ADS: list, update status
+ADS: list (with full creative name/body/image), get per-ad insights with ad names, update status
 AUDIENCES: list, create custom (WEBSITE/CUSTOM/ENGAGEMENT subtypes), create lookalike
 BULK: pause or activate multiple campaigns at once
 
@@ -201,8 +201,21 @@ const TOOLS = [
   // Ads
   {
     name: "list_ads",
-    description: "List ads in an ad set.",
+    description: "List ads in an ad set with ad name, status, and full creative details (title, body, image URL). Use this to see creative names.",
     input_schema: { type: "object", properties: { adset_id: { type: "string" } }, required: ["adset_id"] },
+  },
+  {
+    name: "get_ad_insights",
+    description: "Get per-ad performance metrics INCLUDING ad_name and creative name. Use this to identify best/worst performing individual ads by name. Returns ad_id, ad_name, impressions, clicks, spend, CTR, CPC, ROAS.",
+    input_schema: {
+      type: "object",
+      properties: {
+        adset_id: { type: "string", description: "Get insights for all ads within this ad set" },
+        campaign_id: { type: "string", description: "Alternatively, get insights for all ads across a whole campaign" },
+        date_preset: { type: "string", enum: ["last_7d", "last_14d", "last_30d", "last_90d"] },
+      },
+      required: ["date_preset"],
+    },
   },
   {
     name: "update_ad_status",
@@ -409,7 +422,32 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
 
   // Ads ────────────────────────────────────────────────────────────────────
   if (name === "list_ads") {
-    const res = await fetch(`${BASE}/${String(input.adset_id)}/ads?fields=id,name,status,creative{id,name,body,image_url}&access_token=${tok}`);
+    const fields = [
+      "id", "name", "status", "adset_id", "campaign_id",
+      "creative{id,name,title,body,image_url,thumbnail_url,object_story_spec}",
+    ].join(",");
+    const res = await fetch(`${BASE}/${String(input.adset_id)}/ads?fields=${fields}&access_token=${tok}`);
+    return safeParseJSON(await res.text());
+  }
+
+  if (name === "get_ad_insights") {
+    const { adset_id, campaign_id, date_preset } = input as { adset_id?: string; campaign_id?: string; date_preset: string };
+    const fields = "ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,impressions,clicks,spend,ctr,cpc,actions,action_values,purchase_roas";
+
+    let url: string;
+    if (adset_id) {
+      // Filter by adset — fastest for drilling into one ad set
+      const filtering = encodeURIComponent(JSON.stringify([{ field: "adset.id", operator: "EQUAL", value: String(adset_id) }]));
+      url = `${BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${filtering}&access_token=${tok}`;
+    } else if (campaign_id) {
+      const filtering = encodeURIComponent(JSON.stringify([{ field: "campaign.id", operator: "EQUAL", value: String(campaign_id) }]));
+      url = `${BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${filtering}&access_token=${tok}`;
+    } else {
+      // No filter — all ads in the account
+      url = `${BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&access_token=${tok}`;
+    }
+
+    const res = await fetch(url);
     return safeParseJSON(await res.text());
   }
 
@@ -593,6 +631,7 @@ function fmtCall(name: string, i: ToolInput): string {
     case "update_adset_status":        return `Setting ad set ${i.adset_id} → ${i.status}`;
     case "get_adset_insights":         return `Fetching ad set performance (${i.date_preset})...`;
     case "list_ads":                   return `Fetching ads in ad set ${i.adset_id}...`;
+    case "get_ad_insights":             return i.adset_id ? `Fetching ad performance in ad set ${i.adset_id} (${i.date_preset})...` : `Fetching ad performance in campaign ${i.campaign_id} (${i.date_preset})...`;
     case "update_ad_status":           return `Setting ad ${i.ad_id} → ${i.status}`;
     case "list_custom_audiences":      return "Fetching custom audiences...";
     case "create_custom_audience":     return `Creating audience "${i.name}"...`;
@@ -623,6 +662,7 @@ function fmtResult(name: string, result: unknown): string {
     case "update_adset_status":        return ok("Ad set status updated");
     case "get_adset_insights":         return `Insights for ${count() ?? "?"} ad set${count() !== 1 ? "s" : ""}`;
     case "list_ads":                   return `Found ${count() ?? "?"} ad${count() !== 1 ? "s" : ""}`;
+    case "get_ad_insights":             { const d = r?.data as unknown[]; return d ? `Ad insights for ${d.length} ad${d.length !== 1 ? 's' : ''} (with names)` : 'Ad insights loaded'; }
     case "update_ad_status":           return ok("Ad status updated");
     case "list_custom_audiences":      return `Found ${count() ?? "?"} audience${count() !== 1 ? "s" : ""}`;
     case "create_custom_audience":     return r?.id ? `Audience created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
