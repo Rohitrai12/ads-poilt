@@ -1,0 +1,18 @@
+{
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/api/auth/facebook/callback/route": "/api/auth/facebook/callback",
+  "/api/auth/login/route": "/api/auth/login",
+  "/api/auth/logout/route": "/api/auth/logout",
+  "/api/auth/me/route": "/api/auth/me",
+  "/api/auth/signup/route": "/api/auth/signup",
+  "/api/createCampaign/route": "/api/createCampaign",
+  "/api/metaChat/route": "/api/metaChat",
+  "/chat/page": "/chat",
+  "/dashboard/chat/page": "/dashboard/chat",
+  "/dashboard/page": "/dashboard",
+  "/favicon.ico/route": "/favicon.ico",
+  "/login/page": "/login",
+  "/page": "/",
+  "/sign-up/page": "/sign-up"
+}
