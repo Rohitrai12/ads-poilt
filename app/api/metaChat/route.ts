@@ -6,9 +6,6 @@ const CLAUDE_MODEL = "claude-sonnet-4-5";
 const BASE = `https://graph.facebook.com/${META_VERSION}`;
 
 // ─── BigInt-safe JSON parser ──────────────────────────────────────────────────
-// Meta IDs are 18-digit integers that exceed JS Number.MAX_SAFE_INTEGER.
-// Parsing them naively corrupts them (120212214334200355 → 120212214334200320).
-// This quotes bare integers ≥16 digits BEFORE JSON.parse touches them.
 function safeParseJSON(text: string): unknown {
   const safe = text.replace(/:(\s*)(-?\d{16,})([,\}\]])/g, (_m, sp, n, tail) => `:"${n}"${tail}`);
   return JSON.parse(safe);
@@ -21,7 +18,7 @@ You manage the full hierarchy: Campaigns → Ad Sets → Ads, plus Custom Audien
 
 CAMPAIGNS: list, get, create, update budget/status/objective, delete, insights
 AD SETS: list, create with targeting, update budget/status/targeting, insights
-ADS: list (with full creative name/body/image), get per-ad insights with ad names, update status
+ADS: list (with full creative name/body/image), get per-ad insights with ad names, update status, CREATE new ads with images
 AUDIENCES: list, create custom (WEBSITE/CUSTOM/ENGAGEMENT subtypes), create lookalike
 BULK: pause or activate multiple campaigns at once
 
@@ -37,7 +34,8 @@ Behavioral rules:
 9. Never send bid_strategy in create_adset — the ad set inherits it from the campaign.
 10. LINK_CLICKS optimization always uses IMPRESSIONS billing (auto-corrected).
 11. Always treat ALL IDs as strings, never numbers.
-12. For bulk ops, list campaigns first to confirm scope before executing.`;
+12. For bulk ops, list campaigns first to confirm scope before executing.
+13. For create_ad: the image_hash comes from uploading the image via the upload_ad_image tool first. Always upload the image before creating the ad. The ad_creative requires a page_id — ask the user for their Facebook Page ID if not provided.`;
 
 // ─── Tools ────────────────────────────────────────────────────────────────────
 const TOOLS = [
@@ -226,6 +224,41 @@ const TOOLS = [
       required: ["ad_id", "status", "reason"],
     },
   },
+  {
+    name: "upload_ad_image",
+    description: "Upload an image to the ad account's image library. Returns an image_hash to use in create_ad. The image should be provided as a base64-encoded string. Call this BEFORE create_ad when the user has provided an image.",
+    input_schema: {
+      type: "object",
+      properties: {
+        image_base64: { type: "string", description: "Base64-encoded image data (without data URI prefix)" },
+        image_filename: { type: "string", description: "Filename for the image e.g. 'ad-image.jpg'" },
+      },
+      required: ["image_base64", "image_filename"],
+    },
+  },
+  {
+    name: "create_ad",
+    description: "Create a new ad within an ad set. Requires an image_hash (from upload_ad_image) and a Facebook Page ID. The ad starts PAUSED. Use this to create the actual ad creative with headline, body copy, and a destination URL.",
+    input_schema: {
+      type: "object",
+      properties: {
+        adset_id: { type: "string", description: "The ad set to place this ad in" },
+        name: { type: "string", description: "Internal name for this ad" },
+        page_id: { type: "string", description: "Facebook Page ID that will sponsor the ad" },
+        image_hash: { type: "string", description: "Image hash from upload_ad_image tool" },
+        headline: { type: "string", description: "Primary headline text (max 40 chars recommended)" },
+        body: { type: "string", description: "Main ad body copy / primary text" },
+        link_url: { type: "string", description: "Destination URL when user clicks the ad" },
+        call_to_action: {
+          type: "string",
+          enum: ["LEARN_MORE","SHOP_NOW","SIGN_UP","DOWNLOAD","CONTACT_US","BOOK_TRAVEL","APPLY_NOW","GET_OFFER","ORDER_NOW","WATCH_MORE","GET_QUOTE","SUBSCRIBE","DONATE_NOW","NO_BUTTON"],
+          description: "CTA button label",
+        },
+        description: { type: "string", description: "Optional link description shown below headline" },
+      },
+      required: ["adset_id", "name", "page_id", "image_hash", "headline", "body", "link_url", "call_to_action"],
+    },
+  },
 
   // Custom Audiences
   {
@@ -235,7 +268,7 @@ const TOOLS = [
   },
   {
     name: "create_custom_audience",
-    description: "Create a new custom audience. Use subtype WEBSITE for pixel-based retargeting (no file upload needed), CUSTOM for uploading customer lists (emails/phones), or ENGAGEMENT for people who engaged with your Facebook/Instagram content.",
+    description: "Create a new custom audience.",
     input_schema: {
       type: "object",
       properties: {
@@ -244,21 +277,10 @@ const TOOLS = [
         subtype: {
           type: "string",
           enum: ["WEBSITE", "ENGAGEMENT", "CUSTOM"],
-          description: "WEBSITE = pixel retargeting (most common, no upload needed). CUSTOM = upload customer list. ENGAGEMENT = page/video engagers.",
         },
-        customer_file_source: {
-          type: "string",
-          enum: ["USER_PROVIDED_ONLY", "PARTNER_PROVIDED_ONLY", "BOTH_USER_AND_PARTNER_PROVIDED"],
-          description: "Required only when subtype is CUSTOM. Use USER_PROVIDED_ONLY if you collected the data yourself.",
-        },
-        pixel_id: {
-          type: "string",
-          description: "Required for WEBSITE subtype. The Meta Pixel ID to build the audience from.",
-        },
-        retention_days: {
-          type: "number",
-          description: "For WEBSITE audiences: how many days back to include visitors (e.g. 30, 60, 180). Default 30.",
-        },
+        customer_file_source: { type: "string", enum: ["USER_PROVIDED_ONLY", "PARTNER_PROVIDED_ONLY", "BOTH_USER_AND_PARTNER_PROVIDED"] },
+        pixel_id: { type: "string" },
+        retention_days: { type: "number" },
       },
       required: ["name", "subtype"],
     },
@@ -271,8 +293,8 @@ const TOOLS = [
       properties: {
         name: { type: "string" },
         source_audience_id: { type: "string" },
-        country: { type: "string", description: "ISO country code e.g. 'US'" },
-        ratio: { type: "number", description: "0.01-0.20 (1%-20% of population). Lower = more similar." },
+        country: { type: "string" },
+        ratio: { type: "number" },
       },
       required: ["name", "source_audience_id", "country", "ratio"],
     },
@@ -375,7 +397,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
     if (age_max) targeting.age_max = age_max;
     if (custom_audience_id) targeting.custom_audiences = [{ id: String(custom_audience_id) }];
 
-    // LINK_CLICKS optimization requires IMPRESSIONS billing (Meta rule)
     const effectiveBilling = optimization_goal === "LINK_CLICKS" && billing_event === "LINK_CLICKS" ? "IMPRESSIONS" : billing_event;
 
     const p = new URLSearchParams({
@@ -385,7 +406,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
       optimization_goal, billing_event: effectiveBilling,
       status: "PAUSED", access_token: tok,
     });
-    // Never send bid_strategy — inherited from campaign. Only send bid_amount when required.
     if (bid_amount_cents) p.set("bid_amount", String(Math.round(bid_amount_cents)));
     return post(`${BASE}/${acct}/adsets`, p);
   }
@@ -436,14 +456,12 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
 
     let url: string;
     if (adset_id) {
-      // Filter by adset — fastest for drilling into one ad set
       const filtering = encodeURIComponent(JSON.stringify([{ field: "adset.id", operator: "EQUAL", value: String(adset_id) }]));
       url = `${BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${filtering}&access_token=${tok}`;
     } else if (campaign_id) {
       const filtering = encodeURIComponent(JSON.stringify([{ field: "campaign.id", operator: "EQUAL", value: String(campaign_id) }]));
       url = `${BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${filtering}&access_token=${tok}`;
     } else {
-      // No filter — all ads in the account
       url = `${BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&access_token=${tok}`;
     }
 
@@ -454,6 +472,92 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
   if (name === "update_ad_status") {
     const { ad_id, status } = input as { ad_id: string; status: string };
     return post(`${BASE}/${String(ad_id)}`, new URLSearchParams({ status, access_token: tok }));
+  }
+
+  // ─── Image Upload ────────────────────────────────────────────────────────
+  if (name === "upload_ad_image") {
+    const { image_base64, image_filename } = input as { image_base64: string; image_filename: string };
+
+    // Convert base64 to binary
+    const binaryString = atob(image_base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    // Determine MIME type from filename
+    const ext = image_filename.toLowerCase().split(".").pop() ?? "jpg";
+    const mimeMap: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
+    const mimeType = mimeMap[ext] ?? "image/jpeg";
+
+    const formData = new FormData();
+    formData.append("access_token", tok);
+    formData.append("filename", new Blob([bytes], { type: mimeType }), image_filename);
+
+    const res = await fetch(`${BASE}/${acct}/adimages`, { method: "POST", body: formData });
+    const result = safeParseJSON(await res.text()) as Record<string, unknown>;
+
+    // Meta returns: { images: { "<filename>": { hash, url, ... } } }
+    if (result.images) {
+      const images = result.images as Record<string, { hash: string; url: string; width: number; height: number }>;
+      const firstKey = Object.keys(images)[0];
+      if (firstKey) {
+        const img = images[firstKey];
+        return { success: true, image_hash: img.hash, image_url: img.url, width: img.width, height: img.height };
+      }
+    }
+    return result;
+  }
+
+  // ─── Create Ad ───────────────────────────────────────────────────────────
+  if (name === "create_ad") {
+    const {
+      adset_id, name: adName, page_id, image_hash,
+      headline, body, link_url, call_to_action, description,
+    } = input as {
+      adset_id: string; name: string; page_id: string; image_hash: string;
+      headline: string; body: string; link_url: string;
+      call_to_action: string; description?: string;
+    };
+
+    // Step 1: Create the ad creative
+    const objectStorySpec: Record<string, unknown> = {
+      page_id: String(page_id),
+      link_data: {
+        image_hash,
+        link: link_url,
+        message: body,
+        name: headline,
+        call_to_action: { type: call_to_action },
+        ...(description ? { description } : {}),
+      },
+    };
+
+    const creativeParams = new URLSearchParams({
+      name: `${adName} Creative`,
+      object_story_spec: JSON.stringify(objectStorySpec),
+      access_token: tok,
+    });
+
+    const creativeRes = await post(`${BASE}/${acct}/adcreatives`, creativeParams) as Record<string, unknown>;
+    if (creativeRes.error) return { error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}` };
+
+    const creativeId = String(creativeRes.id);
+
+    // Step 2: Create the ad using the creative
+    const adParams = new URLSearchParams({
+      name: adName,
+      adset_id: String(adset_id),
+      creative: JSON.stringify({ creative_id: creativeId }),
+      status: "PAUSED",
+      access_token: tok,
+    });
+
+    const adRes = await post(`${BASE}/${acct}/ads`, adParams) as Record<string, unknown>;
+    if (adRes.id) {
+      return { success: true, ad_id: adRes.id, creative_id: creativeId, status: "PAUSED" };
+    }
+    return adRes;
   }
 
   // Audiences ──────────────────────────────────────────────────────────────
@@ -473,7 +577,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
     if (description) p.set("description", description);
 
     if (subtype === "CUSTOM") {
-      // customer_file_source is required by Meta for CUSTOM audiences
       p.set("customer_file_source", customer_file_source ?? "USER_PROVIDED_ONLY");
     }
 
@@ -490,8 +593,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
     }
 
     if (subtype === "ENGAGEMENT") {
-      // Engagement audiences are created with object_id pointing to a Page or Instagram account
-      // We create a basic engagement audience shell — the user can refine in Ads Manager
       p.set("rule", JSON.stringify({
         inclusions: { operator: "or", rules: [{ retention_seconds: 30 * 86400, event_sources: [] }] },
       }));
@@ -561,7 +662,6 @@ export async function POST(request: NextRequest) {
           break;
         }
 
-        // safeParseJSON protects large IDs in Claude's tool_use output too
         const { content, stop_reason } = safeParseJSON(await claudeRes.text()) as { content: ClaudeContentBlock[]; stop_reason: string };
 
         for (const block of content) {
@@ -631,8 +731,10 @@ function fmtCall(name: string, i: ToolInput): string {
     case "update_adset_status":        return `Setting ad set ${i.adset_id} → ${i.status}`;
     case "get_adset_insights":         return `Fetching ad set performance (${i.date_preset})...`;
     case "list_ads":                   return `Fetching ads in ad set ${i.adset_id}...`;
-    case "get_ad_insights":             return i.adset_id ? `Fetching ad performance in ad set ${i.adset_id} (${i.date_preset})...` : `Fetching ad performance in campaign ${i.campaign_id} (${i.date_preset})...`;
+    case "get_ad_insights":            return i.adset_id ? `Fetching ad performance in ad set ${i.adset_id} (${i.date_preset})...` : `Fetching ad performance in campaign ${i.campaign_id} (${i.date_preset})...`;
     case "update_ad_status":           return `Setting ad ${i.ad_id} → ${i.status}`;
+    case "upload_ad_image":            return `Uploading image "${i.image_filename}" to ad library...`;
+    case "create_ad":                  return `Creating ad "${i.name}" in ad set ${i.adset_id}...`;
     case "list_custom_audiences":      return "Fetching custom audiences...";
     case "create_custom_audience":     return `Creating audience "${i.name}"...`;
     case "create_lookalike_audience":  return `Creating lookalike "${i.name}" (${i.country}, ${((i.ratio as number) * 100).toFixed(0)}%)...`;
@@ -662,8 +764,10 @@ function fmtResult(name: string, result: unknown): string {
     case "update_adset_status":        return ok("Ad set status updated");
     case "get_adset_insights":         return `Insights for ${count() ?? "?"} ad set${count() !== 1 ? "s" : ""}`;
     case "list_ads":                   return `Found ${count() ?? "?"} ad${count() !== 1 ? "s" : ""}`;
-    case "get_ad_insights":             { const d = r?.data as unknown[]; return d ? `Ad insights for ${d.length} ad${d.length !== 1 ? 's' : ''} (with names)` : 'Ad insights loaded'; }
+    case "get_ad_insights":            { const d = r?.data as unknown[]; return d ? `Ad insights for ${d.length} ad${d.length !== 1 ? "s" : ""} (with names)` : "Ad insights loaded"; }
     case "update_ad_status":           return ok("Ad status updated");
+    case "upload_ad_image":            return r?.image_hash ? `Image uploaded ✓ (hash: ${String(r.image_hash).slice(0, 12)}...)` : `Response: ${JSON.stringify(r)}`;
+    case "create_ad":                  return r?.ad_id ? `Ad created ✓ (ID: ${r.ad_id}, status: PAUSED)` : `Response: ${JSON.stringify(r)}`;
     case "list_custom_audiences":      return `Found ${count() ?? "?"} audience${count() !== 1 ? "s" : ""}`;
     case "create_custom_audience":     return r?.id ? `Audience created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
     case "create_lookalike_audience":  return r?.id ? `Lookalike created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;

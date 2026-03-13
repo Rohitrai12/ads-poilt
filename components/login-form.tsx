@@ -113,7 +113,7 @@ export function LoginForm({
                   <span className="text-xs text-muted-foreground">or</span>
                   <div className="h-px flex-1 bg-border" />
                 </div>
-                <Button
+                {/* <Button
                   type="button"
                   variant="outline"
                   className="mt-3 flex w-full items-center justify-center gap-2"
@@ -134,7 +134,7 @@ export function LoginForm({
                 >
                   <FacebookIcon className="h-4 w-4" />
                   <span>Connect with Facebook</span>
-                </Button>
+                </Button> */}
                 <FieldDescription className="text-center">
                   Don&apos;t have an account? <Link href="/sign-up">Sign up</Link>
                 </FieldDescription>

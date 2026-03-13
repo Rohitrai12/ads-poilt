@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, Suspense } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,12 +22,21 @@ type Step = {
   data?: unknown;
 };
 
+type AttachedImage = {
+  filename: string;
+  base64: string;          // raw base64 (no data URI prefix)
+  dataUrl: string;         // full data URI for preview
+  mimeType: string;
+  sizeLabel: string;
+};
+
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   steps?: Step[];
   pending?: boolean;
+  images?: AttachedImage[];
 };
 
 type ChatSession = {
@@ -93,6 +100,12 @@ function groupSessionsByDate(sessions: ChatSession[]) {
   return groups;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
 // ─── localStorage helpers ─────────────────────────────────────────────────────
 
 const LS_SESSIONS = "meta_ads_sessions";
@@ -113,8 +126,9 @@ const TOOL_ICONS: Record<string, string> = {
   update_campaign_objective: "◎", delete_campaign: "⚠", bulk_update_campaign_status: "◉",
   list_adsets: "⬡", create_adset: "◆", update_adset_targeting: "◎",
   update_adset_budget: "◎", update_adset_status: "◉", get_adset_insights: "◈",
-  list_ads: "⬡", update_ad_status: "◉", list_custom_audiences: "⬡",
-  create_custom_audience: "◆", create_lookalike_audience: "◆",
+  list_ads: "⬡", update_ad_status: "◉", get_ad_insights: "◈",
+  upload_ad_image: "◼", create_ad: "◆",
+  list_custom_audiences: "⬡", create_custom_audience: "◆", create_lookalike_audience: "◆",
 };
 
 const STATUS_LABELS: Record<number, string> = {
@@ -275,6 +289,37 @@ function TypingCursor() {
   );
 }
 
+// ─── Image Preview Pills ──────────────────────────────────────────────────────
+
+function ImagePill({ img, onRemove }: { img: AttachedImage; onRemove?: () => void }) {
+  return (
+    <div className="group relative flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 p-1.5 pr-2.5">
+      {/* Thumbnail */}
+      <div className="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-border/40">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={img.dataUrl} alt={img.filename} className="h-full w-full object-cover" />
+      </div>
+      {/* Info */}
+      <div className="min-w-0">
+        <div className="max-w-[120px] truncate text-[11px] font-medium text-foreground">{img.filename}</div>
+        <div className="text-[10px] text-muted-foreground">{img.sizeLabel}</div>
+      </div>
+      {/* Remove button */}
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-700 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive"
+          title="Remove image"
+        >
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Tool Steps ───────────────────────────────────────────────────────────────
 
 function ToolSteps({ steps }: { steps: Step[] }) {
@@ -345,7 +390,20 @@ function AssistantMessage({ msg }: { msg: Message }) {
 function UserMessage({ msg }: { msg: Message }) {
   return (
     <div className="flex w-full justify-end gap-4 px-4 py-5" style={{ animation: "fadeSlideIn 0.15s ease-out" }}>
-      <div className="max-w-[75%] rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-7 text-white shadow-sm dark:bg-zinc-700">{msg.content}</div>
+      <div className="max-w-[75%] space-y-2">
+        {/* Image previews */}
+        {msg.images && msg.images.length > 0 && (
+          <div className="flex flex-wrap justify-end gap-2">
+            {msg.images.map((img, i) => (
+              <ImagePill key={i} img={img} />
+            ))}
+          </div>
+        )}
+        {/* Text */}
+        {msg.content && (
+          <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-7 text-white shadow-sm dark:bg-zinc-700">{msg.content}</div>
+        )}
+      </div>
       <UserAvatar />
     </div>
   );
@@ -402,7 +460,6 @@ function Sidebar({
       </div>
 
       {collapsed ? (
-        /* Collapsed mode */
         <div className="flex flex-col items-center gap-1.5 overflow-y-auto py-3">
           <button onClick={onNew} title="New chat"
             className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
@@ -420,7 +477,6 @@ function Sidebar({
           ))}
         </div>
       ) : (
-        /* Expanded mode */
         <div className="flex-1 overflow-y-auto py-2 scrollbar-thin">
           {groups.length === 0 ? (
             <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
@@ -462,13 +518,11 @@ function Sidebar({
                             : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
                           }`}
                       >
-                        {/* Fade + actions overlay */}
                         <div className="flex items-start gap-1">
                           <span className="flex-1 min-w-0 truncate text-xs leading-5">{session.title}</span>
                         </div>
                         <div className="mt-0.5 text-[10px] text-muted-foreground/40">{formatRelativeTime(session.updatedAt)}</div>
 
-                        {/* Hover action buttons */}
                         <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden items-center gap-0.5 group-hover/item:flex">
                           <div className="absolute -left-6 top-0 h-full w-6 bg-gradient-to-l from-muted/80 to-transparent" />
                           <span role="button" title="Rename"
@@ -513,73 +567,140 @@ function FacebookIcon({ size = 20, color = "currentColor" }: { size?: number; co
   );
 }
 
-// ─── Connect + Account Picker screens ────────────────────────────────────────
+// ─── Connect screen (manual credentials) ─────────────────────────────────────
 
-function ConnectScreen({ error }: { error: string }) {
+function ConnectScreen({ onConnect }: {
+  onConnect: (accessToken: string, adAccountId: string) => void;
+}) {
+  const [token, setToken] = useState("");
+  const [adAccountId, setAdAccountId] = useState("");
   const [loading, setLoading] = useState(false);
-  const handleConnect = () => {
-    const appId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID;
-    if (!appId) { alert("NEXT_PUBLIC_FACEBOOK_APP_ID is not set"); return; }
-    setLoading(true);
-    const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
-    const scope = encodeURIComponent("ads_management,ads_read,business_management");
-    window.location.href = `https://www.facebook.com/v25.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code`;
-  };
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-8 px-4 py-12">
-      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_60px_rgba(24,119,242,0.3)]">
-        <FacebookIcon size={32} color="white" />
-      </div>
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">Connect your Meta Ads account</h2>
-        <p className="mt-2 max-w-sm text-sm text-muted-foreground">Manage campaigns, budgets, audiences, and performance — all through natural language.</p>
-      </div>
-      <Card className="w-full max-w-sm border-border/60">
-        <CardHeader className="pb-3"><CardTitle className="text-sm">Permissions requested</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          {[["ads_management","Create and edit campaigns, ad sets, ads"],["ads_read","View performance insights and reporting"],["business_management","Access your ad accounts"]].map(([perm,desc]) => (
-            <div key={perm} className="flex items-start gap-2">
-              <div className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />
-              <div><span className="font-mono text-xs text-foreground">{perm}</span><span className="text-xs text-muted-foreground"> — {desc}</span></div>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-      {error && <div className="w-full max-w-sm rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-center font-mono text-xs text-destructive">Auth error: {error}</div>}
-      <Button size="lg" onClick={handleConnect} disabled={loading} className="gap-2 bg-[#aaf345] hover:bg-[#1565d8]">
-        <FacebookIcon size={16} color="white" />{loading ? "Redirecting…" : "Continue with Facebook"}
-      </Button>
-    </div>
-  );
-}
+  const [error, setError] = useState("");
 
-function AccountPicker({ accounts, onSelect }: { accounts: AdAccount[]; onSelect: (a: AdAccount) => void }) {
+  const handleSubmit = async () => {
+    const cleanToken = token.trim();
+    // Accept either bare numeric ID or "act_XXXXXX"
+    const cleanAcct = adAccountId.trim().replace(/^act_/i, "");
+    if (!cleanToken) { setError("Access token is required."); return; }
+    if (!cleanAcct || !/^\d+$/.test(cleanAcct)) { setError("Ad Account ID must be numeric (e.g. 123456789)."); return; }
+
+    setError("");
+    setLoading(true);
+    try {
+      // Validate by fetching the account
+      const res = await fetch(
+        `https://graph.facebook.com/v25.0/act_${cleanAcct}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(cleanToken)}`
+      );
+      const data = await res.json();
+      if (data.error) {
+        setError(data.error.message ?? "Invalid token or account ID.");
+        setLoading(false);
+        return;
+      }
+      onConnect(cleanToken, cleanAcct);
+    } catch {
+      setError("Network error — could not reach Meta API.");
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
-      <div className="w-full max-w-md">
-        <h2 className="text-lg font-semibold">Select an ad account</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{accounts.length} account{accounts.length !== 1 ? "s" : ""} found</p>
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_50px_rgba(170,243,69,0.25)]">
+        <FacebookIcon size={28} color="white" />
       </div>
-      <div className="flex w-full max-w-md flex-col gap-2">
-        {accounts.map((acct) => {
-          const isActive = acct.account_status === 1;
-          return (
-            <button key={acct.id} onClick={() => isActive && onSelect(acct)} disabled={!isActive}
-              className="w-full rounded-lg border border-border/60 bg-card px-4 py-3 text-left transition-all hover:border-primary/50 hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-40">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">{acct.name}</span>
-                <Badge variant={isActive ? "secondary" : "destructive"} className="font-mono text-[10px]">{STATUS_LABELS[acct.account_status] ?? "Unknown"}</Badge>
-              </div>
-              <div className="mt-1 font-mono text-[11px] text-muted-foreground">{acct.currency} · {acct.timezone_name} · ID: {acct.id.replace("act_","")}</div>
-            </button>
-          );
-        })}
+
+      <div className="text-center">
+        <h2 className="text-xl font-semibold">Connect Meta Ads</h2>
+        <p className="mt-1.5 max-w-xs text-sm text-muted-foreground">Enter your credentials to start managing campaigns with AI.</p>
       </div>
+
+      <Card className="w-full max-w-sm border-border/60">
+        <CardContent className="space-y-4 pt-5">
+
+          {/* Access Token */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground">Access Token</label>
+            <Input
+              type="password"
+              placeholder="EAAxxxxxxxxxxxxxxxx…"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              className="font-mono text-xs"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Get it from{" "}
+              <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer"
+                className="text-[#aaf345] underline-offset-2 hover:underline">
+                Graph API Explorer
+              </a>
+              {" "}with <code className="rounded bg-muted px-1 text-[10px]">ads_management</code> + <code className="rounded bg-muted px-1 text-[10px]">ads_read</code> scopes.
+            </p>
+          </div>
+
+          {/* Ad Account ID */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground">Ad Account ID</label>
+            <div className="relative flex items-center">
+              <span className="absolute left-3 select-none font-mono text-xs text-muted-foreground">act_</span>
+              <Input
+                placeholder="123456789"
+                value={adAccountId.replace(/^act_/i, "")}
+                onChange={(e) => setAdAccountId(e.target.value.replace(/^act_/i, ""))}
+                className="pl-10 font-mono text-xs"
+                autoComplete="off"
+                inputMode="numeric"
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Found in Meta Ads Manager → Account Settings, or in the URL as <code className="rounded bg-muted px-1 text-[10px]">act_XXXXXXX</code>.
+            </p>
+          </div>
+
+          {/* Error */}
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {error}
+            </div>
+          )}
+
+          <Button
+            className="w-full gap-2 bg-[#aaf345] text-black hover:bg-[#96da2e] disabled:opacity-40"
+            onClick={handleSubmit}
+            disabled={loading || !token.trim() || !adAccountId.trim()}
+          >
+            {loading ? (
+              <>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                Verifying…
+              </>
+            ) : (
+              <>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+                Connect
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Quick help */}
+      <details className="w-full max-w-sm">
+        <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+          How to get a long-lived token ▸
+        </summary>
+        <div className="mt-2 space-y-1.5 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+          <p>1. Open <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Graph API Explorer</a>.</p>
+          <p>2. Select your App → Generate Access Token → check <code className="rounded bg-muted px-1">ads_management</code> and <code className="rounded bg-muted px-1">ads_read</code>.</p>
+          <p>3. Copy the token above. Short-lived tokens expire in 1 hour; exchange via <code className="rounded bg-muted px-1">/oauth/access_token?grant_type=fb_exchange_token</code> for a 60-day token.</p>
+        </div>
+      </details>
     </div>
   );
 }
-
-// ─── Animation styles ─────────────────────────────────────────────────────────
 
 const ANIMATION_STYLES = `
   @keyframes fadeSlideIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
@@ -587,22 +708,20 @@ const ANIMATION_STYLES = `
   @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
 `;
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Main Component ──────────────────────────────────────────────────────────────────────────────
 
 function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
-  const searchParams = useSearchParams();
-  const router = useRouter();
-
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [phase, setPhase] = useState<"connect" | "pick" | "chat">("connect");
+  const [phase, setPhase] = useState<"connect" | "chat">("connect");
   const [accessToken, setAccessToken] = useState("");
-  const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [adAccountId, setAdAccountId] = useState("");
   const [selectedAccount, setSelectedAccount] = useState<AdAccount | null>(null);
-  const [authError, setAuthError] = useState("");
 
-  // History
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -610,65 +729,126 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Load sessions
   useEffect(() => {
     if (typeof window !== "undefined") setSessions(loadSessions());
   }, []);
 
-  // Persist sessions
   useEffect(() => {
     if (typeof window !== "undefined") saveSessions(sessions);
   }, [sessions]);
 
-  // Rehydrate auth
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (searchParams.get("fb_token") || searchParams.get("fb_accounts")) return;
     try {
       const raw = window.localStorage.getItem(LS_AUTH);
       if (!raw) return;
-      const saved: { accessToken: string; accounts: AdAccount[]; selectedAccount?: AdAccount | null } = JSON.parse(raw);
-      if (!saved.accessToken || !saved.accounts?.length) return;
-      setAccessToken(saved.accessToken); setAccounts(saved.accounts);
+      const saved: { accessToken: string; adAccountId: string; selectedAccount?: AdAccount | null } = JSON.parse(raw);
+      if (!saved.accessToken || !saved.adAccountId) return;
+      setAccessToken(saved.accessToken);
+      setAdAccountId(saved.adAccountId);
       if (saved.selectedAccount) { setSelectedAccount(saved.selectedAccount); setPhase("chat"); }
-      else { setPhase(saved.accounts.length === 1 ? "chat" : "pick"); if (saved.accounts.length === 1) setSelectedAccount(saved.accounts[0]); }
     } catch { /* ignore */ }
-  }, [searchParams]);
-
-  // OAuth callback
-  useEffect(() => {
-    const token = searchParams.get("fb_token");
-    const acctJson = searchParams.get("fb_accounts");
-    const error = searchParams.get("fb_error");
-    if (error) { setAuthError(decodeURIComponent(error)); router.replace("/dashboard/chat"); return; }
-    if (token && acctJson) {
-      try {
-        const parsed: AdAccount[] = JSON.parse(acctJson);
-        setAccessToken(token); setAccounts(parsed);
-        if (parsed.length === 1 && parsed[0].account_status === 1) { setSelectedAccount(parsed[0]); setPhase("chat"); }
-        else setPhase("pick");
-      } catch { setAuthError("Failed to parse account data"); }
-      router.replace("/dashboard/chat");
-    }
-  }, [searchParams, router]);
+  }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  const handleAccountSelect = (acct: AdAccount) => {
-    setSelectedAccount(acct); setPhase("chat");
-    setTimeout(() => inputRef.current?.focus(), 100);
-  };
+  const handleManualConnect = useCallback(async (token: string, acctId: string) => {
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v25.0/act_${acctId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(token)}`
+      );
+      const data = await res.json();
+      const acct: AdAccount = {
+        id: `act_${acctId}`,
+        name: data.name ?? `Account ${acctId}`,
+        account_status: data.account_status ?? 1,
+        currency: data.currency ?? "USD",
+        timezone_name: data.timezone_name ?? "",
+      };
+      setAccessToken(token);
+      setAdAccountId(acctId);
+      setSelectedAccount(acct);
+      setPhase("chat");
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: token, adAccountId: acctId, selectedAccount: acct }));
+      }
+      setTimeout(() => inputRef.current?.focus(), 100);
+    } catch { /* ignore */ }
+  }, []);
 
   const disconnect = () => {
-    setAccessToken(""); setSelectedAccount(null); setAccounts([]); setMessages([]);
-    setPhase("connect"); setActiveSessionId(null);
+    setAccessToken(""); setAdAccountId(""); setSelectedAccount(null); setMessages([]);
+    setPhase("connect"); setActiveSessionId(null); setAttachedImages([]);
     if (typeof window !== "undefined") window.localStorage.removeItem(LS_AUTH);
   };
+
+  // ── Image attachment ──────────────────────────────────────────────────────
+
+  const handleImageFiles = useCallback((files: FileList | File[]) => {
+    const fileArr = Array.from(files);
+    const validTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    const maxSize = 4 * 1024 * 1024; // 4MB per image
+
+    for (const file of fileArr) {
+      if (!validTypes.includes(file.type)) {
+        alert(`"${file.name}" is not a supported image type. Please use JPG, PNG, GIF, or WebP.`);
+        continue;
+      }
+      if (file.size > maxSize) {
+        alert(`"${file.name}" is too large (max 4 MB).`);
+        continue;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        // Strip the "data:image/...;base64," prefix to get raw base64
+        const base64 = dataUrl.split(",")[1] ?? "";
+        setAttachedImages((prev) => [
+          ...prev,
+          {
+            filename: file.name,
+            base64,
+            dataUrl,
+            mimeType: file.type,
+            sizeLabel: formatBytes(file.size),
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) handleImageFiles(e.target.files);
+    e.target.value = ""; // reset so same file can be picked again
+  };
+
+  const removeImage = (idx: number) => {
+    setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  // Drag & drop on the input area
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files.length) handleImageFiles(e.dataTransfer.files);
+  };
+
+  // Paste images from clipboard
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items);
+    const imageItems = items.filter((item) => item.type.startsWith("image/"));
+    if (imageItems.length === 0) return;
+    e.preventDefault();
+    const files = imageItems.map((item) => item.getAsFile()).filter(Boolean) as File[];
+    handleImageFiles(files);
+  }, [handleImageFiles]);
 
   // ── Session management ────────────────────────────────────────────────────
 
   const startNewChat = useCallback(() => {
-    setMessages([]); setActiveSessionId(null);
+    setMessages([]); setActiveSessionId(null); setAttachedImages([]);
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
 
@@ -690,10 +870,38 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   // ── Send message ──────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(async () => {
-    if (!input.trim() || loading || !accessToken || !selectedAccount) return;
+    const hasText = input.trim().length > 0;
+    const hasImages = attachedImages.length > 0;
+    if ((!hasText && !hasImages) || loading || !accessToken || !selectedAccount) return;
 
-    const adAccountId = selectedAccount.id.replace("act_", "");
-    const userMsg: Message = { id: uid(), role: "user", content: input.trim() };
+
+    // Build a rich text content that includes image context
+    let richContent = input.trim();
+    if (hasImages && !hasText) {
+      richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating an ad.`;
+    }
+
+    // Build the message for the API — include image data as base64 references
+    // We embed image instructions so Claude knows to use upload_ad_image
+    let apiContent = richContent;
+    if (hasImages) {
+      const imageDescriptions = attachedImages.map((img, i) =>
+        `[Image ${i + 1}: filename="${img.filename}", base64_data_available=true, image_base64="${img.base64.slice(0, 20)}..."]`
+      ).join("\n");
+
+      const imageInstructions = attachedImages.map((img, i) =>
+        `IMAGE_${i + 1}_FILENAME: ${img.filename}\nIMAGE_${i + 1}_BASE64: ${img.base64}`
+      ).join("\n\n");
+
+      apiContent = `${richContent}\n\nThe user has attached ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} for ad creation:\n${imageDescriptions}\n\nFull image data for upload_ad_image tool:\n${imageInstructions}`;
+    }
+
+    const userMsg: Message = {
+      id: uid(),
+      role: "user",
+      content: richContent,
+      images: hasImages ? [...attachedImages] : undefined,
+    };
     const assistantMsg: Message = { id: uid(), role: "assistant", content: "", steps: [], pending: true };
 
     const historyForApi = [
@@ -703,12 +911,13 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           ? m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content
           : m.content,
       })),
-      { role: "user", content: input.trim() },
+      { role: "user", content: apiContent },
     ];
 
     const newMessages = [...messages, userMsg, assistantMsg];
     setMessages(newMessages);
     setInput("");
+    setAttachedImages([]);
     setLoading(true);
 
     // Create session on first message
@@ -716,7 +925,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     const sessionId = activeSessionId ?? uid();
     if (isFirst || !activeSessionId) {
       setActiveSessionId(sessionId);
-      const title = input.trim().slice(0, 60) + (input.trim().length > 60 ? "…" : "");
+      const title = richContent.slice(0, 60) + (richContent.length > 60 ? "…" : "");
       setSessions((prev) => [{
         id: sessionId, title, messages: newMessages,
         createdAt: Date.now(), updatedAt: Date.now(),
@@ -773,12 +982,9 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
       setLoading(false);
       inputRef.current?.focus();
     }
-  }, [input, loading, accessToken, selectedAccount, messages, activeSessionId]);
+  }, [input, attachedImages, loading, accessToken, selectedAccount, messages, activeSessionId]);
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !accessToken || !accounts.length) return;
-    window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken, accounts, selectedAccount }));
-  }, [accessToken, accounts, selectedAccount]);
+  // Auth is persisted inside handleManualConnect
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -789,13 +995,13 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     "Which campaign has the best ROAS last 30 days?",
     "Show ad sets for my best campaign",
     "Pause all underperforming campaigns",
-    "Increase budget of my best campaign by 20%",
+    "Create a new ad with an image",
     "List my custom audiences",
   ];
 
-  const accountSessions = selectedAccount
-    ? sessions.filter((s) => s.accountId === selectedAccount.id)
-    : sessions;
+  const accountSessions = sessions;
+
+  const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !loading;
 
   return (
     <>
@@ -823,7 +1029,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
               </>
             ) : (
               <Badge variant="outline" className="font-mono text-[10px]">
-                {phase === "connect" ? "NOT CONNECTED" : "SELECTING ACCOUNT"}
+                "NOT CONNECTED"
               </Badge>
             )}
           </div>
@@ -848,9 +1054,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
 
           {/* Main */}
           <div className="flex min-h-0 flex-1 flex-col">
-            {phase === "connect" && <ConnectScreen error={authError} />}
-            {phase === "pick" && <AccountPicker accounts={accounts} onSelect={handleAccountSelect} />}
-
+            {phase === "connect" && <ConnectScreen onConnect={handleManualConnect} />}
             {phase === "chat" && (
               <>
                 <div className="min-h-0 flex-1 overflow-auto">
@@ -874,6 +1078,13 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                           </button>
                         ))}
                       </div>
+                      {/* Image upload hint */}
+                      <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/20 px-4 py-2.5 text-xs text-muted-foreground">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                          <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
+                        </svg>
+                        <span>Attach images to create ads — drag & drop, paste, or click the image button below</span>
+                      </div>
                     </div>
                   ) : (
                     <div className="mx-auto w-full max-w-3xl divide-y divide-border/20">
@@ -887,19 +1098,54 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                   )}
                 </div>
 
-                <div className="shrink-0 border-t border-border/50 px-4 py-4 md:px-6">
+                {/* Input area */}
+                <div className="shrink-0 border-t border-border/50 px-4 py-4 md:px-6" onDragOver={handleDragOver} onDrop={handleDrop}>
                   <div className="mx-auto w-full max-w-3xl">
+
+                    {/* Attached image previews */}
+                    {attachedImages.length > 0 && (
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        {attachedImages.map((img, i) => (
+                          <ImagePill key={i} img={img} onRemove={() => removeImage(i)} />
+                        ))}
+                      </div>
+                    )}
+
                     <div className="relative flex items-end rounded-xl border border-border/60 bg-muted/20 shadow-sm transition-colors focus-within:border-border focus-within:bg-background">
+                      {/* Image upload button */}
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={loading}
+                        title="Attach image for ad creation"
+                        className="mb-2 ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+                      >
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
+                        </svg>
+                      </button>
+
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/gif,image/webp"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileInputChange}
+                      />
+
                       <Input
                         ref={inputRef}
-                        placeholder="Message Meta Ads AI…"
+                        placeholder={attachedImages.length > 0 ? "Describe how to use this image for an ad…" : "Message Meta Ads AI…"}
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKey}
+                        onPaste={handlePaste}
                         disabled={loading}
-                        className="flex-1 border-0 bg-transparent px-4 py-3 text-sm shadow-none placeholder:text-muted-foreground/50 focus-visible:ring-0"
+                        className="flex-1 border-0 bg-transparent px-3 py-3 text-sm shadow-none placeholder:text-muted-foreground/50 focus-visible:ring-0"
                       />
-                      <button onClick={sendMessage} disabled={loading || !input.trim()}
+
+                      <button onClick={sendMessage} disabled={!canSend}
                         className="mb-2 mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#aaf345] text-white shadow-sm transition-all hover:bg-[#1565d8] disabled:cursor-not-allowed disabled:opacity-30">
                         {loading ? (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
@@ -913,7 +1159,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                       </button>
                     </div>
                     <p className="mt-2 text-center text-[11px] text-muted-foreground/50">
-                      Actions are executed immediately against your live account.
+                      Actions are executed immediately · Attach images to create ads (JPG, PNG, GIF, WebP · max 4 MB)
                     </p>
                   </div>
                 </div>
