@@ -255,7 +255,7 @@ const pct = (a:number, b:number) => b===0?(a>0?100:0):parseFloat((((a-b)/b)*100)
 
 // ─── Micro-components ─────────────────────────────────────────────────────────
 
-function Skeleton({ h=16, w="100%" }: { h?:number; w?:string }) {
+function Skeleton({ h=16, w="100%" }: { h?:number; w?:string|number }) {
   return <div className="animate-pulse rounded bg-muted" style={{ height:h, width:w }} />;
 }
 
