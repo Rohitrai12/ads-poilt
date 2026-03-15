@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+// ─── Next.js runtime config ───────────────────────────────────────────────────
+export const runtime = "nodejs";          // use Node.js runtime (not edge) for long requests
+export const maxDuration = 300;           // 5 min max (Vercel Pro / self-hosted)
+export const dynamic = "force-dynamic";
+
 const META_VERSION = "v25.0";
 const CLAUDE_MODEL = "claude-sonnet-4-5";
 const BASE = `https://graph.facebook.com/${META_VERSION}`;
@@ -35,7 +40,9 @@ Behavioral rules:
 10. LINK_CLICKS optimization always uses IMPRESSIONS billing (auto-corrected).
 11. Always treat ALL IDs as strings, never numbers.
 12. For bulk ops, list campaigns first to confirm scope before executing.
-13. For create_ad: the image_hash comes from uploading the image via the upload_ad_image tool first. Always upload the image before creating the ad. The ad_creative requires a page_id — ask the user for their Facebook Page ID if not provided.`;
+13. For create_ad: the image_hash comes from uploading the image via the upload_ad_image tool first. Always upload the image before creating the ad. The ad_creative requires a page_id — ask the user for their Facebook Page ID if not provided.
+14. CAMPAIGN BUDGET vs AD SET BUDGET: Meta CBO (Campaign Budget Optimization) campaigns own the budget — ad sets under them must NOT have a daily_budget. The create_adset tool handles this automatically: if a budget conflict occurs it retries without daily_budget. If auto_fixed=true is returned, tell the user the ad set was created and CBO manages the budget. NEVER call remove_campaign_budget before create_adset — it doesn't work and wastes a round-trip. Just call create_adset directly.
+15. IMAGE UPLOADS: When the user provides image data (base64), use the exact IMAGE_N_BASE64 value provided in the message for upload_ad_image. Never truncate or modify image base64 data.`;
 
 // ─── Tools ────────────────────────────────────────────────────────────────────
 const TOOLS = [
@@ -83,6 +90,18 @@ const TOOLS = [
       type: "object",
       properties: { campaign_id: { type: "string" }, new_daily_budget_cents: { type: "number" }, reason: { type: "string" } },
       required: ["campaign_id", "new_daily_budget_cents", "reason"],
+    },
+  },
+  {
+    name: "remove_campaign_budget",
+    description: "Remove the campaign-level daily budget so that ad sets can have their own budgets. Call this when create_adset fails with a campaign/adset budget conflict error, then retry create_adset.",
+    input_schema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string", description: "The campaign whose budget should be removed" },
+        reason: { type: "string" },
+      },
+      required: ["campaign_id", "reason"],
     },
   },
   {
@@ -134,13 +153,13 @@ const TOOLS = [
   },
   {
     name: "create_adset",
-    description: "Create a new ad set. Check campaign bid_strategy with get_campaign first.",
+    description: "Create a new ad set. Check campaign bid_strategy with get_campaign first. If the campaign has a campaign-level budget, omit daily_budget_cents OR call remove_campaign_budget first if the user wants ad-set-level budgets.",
     input_schema: {
       type: "object",
       properties: {
         campaign_id: { type: "string" },
         name: { type: "string" },
-        daily_budget_cents: { type: "number" },
+        daily_budget_cents: { type: "number", description: "Omit this field if the campaign already has a campaign-level budget to avoid conflict." },
         targeting_countries: { type: "array", items: { type: "string" }, description: "ISO codes e.g. ['US','AE']" },
         age_min: { type: "number" },
         age_max: { type: "number" },
@@ -148,8 +167,9 @@ const TOOLS = [
         billing_event: { type: "string", enum: ["IMPRESSIONS","LINK_CLICKS"] },
         bid_amount_cents: { type: "number", description: "Required when campaign uses LOWEST_COST_WITH_BID_CAP or COST_CAP." },
         custom_audience_id: { type: "string" },
+        advantage_audience: { type: "number", enum: [0, 1], description: "0 = manual targeting (default), 1 = Meta Advantage+ audience (AI-expanded targeting)" },
       },
-      required: ["campaign_id", "name", "daily_budget_cents", "targeting_countries", "optimization_goal", "billing_event"],
+      required: ["campaign_id", "name", "targeting_countries", "optimization_goal", "billing_event"],
     },
   },
   {
@@ -226,11 +246,11 @@ const TOOLS = [
   },
   {
     name: "upload_ad_image",
-    description: "Upload an image to the ad account's image library. Returns an image_hash to use in create_ad. The image should be provided as a base64-encoded string. Call this BEFORE create_ad when the user has provided an image.",
+    description: "Upload an image to the ad account's image library. Returns an image_hash to use in create_ad. The image should be provided as a base64-encoded string. Call this BEFORE create_ad when the user has provided an image. Extract the full IMAGE_N_BASE64 value from the user message exactly as provided.",
     input_schema: {
       type: "object",
       properties: {
-        image_base64: { type: "string", description: "Base64-encoded image data (without data URI prefix)" },
+        image_base64: { type: "string", description: "Full base64-encoded image data (without data URI prefix). Use the complete IMAGE_N_BASE64 value from the user message." },
         image_filename: { type: "string", description: "Filename for the image e.g. 'ad-image.jpg'" },
       },
       required: ["image_base64", "image_filename"],
@@ -348,6 +368,29 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
     return post(`${BASE}/${String(campaign_id)}`, new URLSearchParams({ daily_budget: String(Math.round(new_daily_budget_cents)), access_token: tok }));
   }
 
+  // ─── Remove campaign budget (disable CBO) ────────────────────────────────
+  if (name === "remove_campaign_budget") {
+    const { campaign_id } = input as { campaign_id: string };
+    const id = String(campaign_id);
+
+    // Meta's Marketing API does not support removing a campaign-level budget or disabling
+    // CBO via a simple API call when the campaign is already live/paused with a budget set.
+    // The budget_rebalance_flag field is read-only after campaign creation in most cases.
+    // We return honest instructions rather than pretending it worked.
+    //
+    // The CORRECT approach for CBO campaigns: ad sets simply don't need a budget —
+    // the campaign budget is distributed automatically. Use create_adset WITHOUT daily_budget_cents.
+    //
+    // For users who genuinely want per-adset budgets, they must toggle CBO off in Ads Manager.
+    return {
+      success: false,
+      cbo_active: true,
+      message: "The Meta API does not support removing a campaign-level budget programmatically after the campaign is created.",
+      recommendation: "Use create_adset WITHOUT a daily_budget — CBO campaigns distribute the campaign budget across all ad sets automatically. You do not need an ad-set budget.",
+      manual_steps: "If you want per-ad-set budgets: Meta Ads Manager → open campaign → Edit → toggle OFF 'Advantage campaign budget' → Save Draft → Publish.",
+    };
+  }
+
   if (name === "update_campaign_status") {
     const { campaign_id, status } = input as { campaign_id: string; status: string };
     return post(`${BASE}/${String(campaign_id)}`, new URLSearchParams({ status, access_token: tok }));
@@ -385,29 +428,99 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
   }
 
   if (name === "create_adset") {
-    const { campaign_id, name: n, daily_budget_cents, targeting_countries, age_min, age_max, optimization_goal, billing_event, bid_amount_cents, custom_audience_id } = input as {
-      campaign_id: string; name: string; daily_budget_cents: number;
+    const {
+      campaign_id, name: n, daily_budget_cents,
+      targeting_countries, age_min, age_max,
+      optimization_goal, billing_event, bid_amount_cents, custom_audience_id,
+      advantage_audience,
+    } = input as {
+      campaign_id: string; name: string; daily_budget_cents?: number;
       targeting_countries: string[]; age_min?: number; age_max?: number;
       optimization_goal: string; billing_event: string;
       bid_amount_cents?: number; custom_audience_id?: string;
+      advantage_audience?: number;
     };
 
-    const targeting: Record<string, unknown> = { geo_locations: { countries: targeting_countries } };
+    const targeting: Record<string, unknown> = {
+      geo_locations: { countries: targeting_countries },
+      targeting_automation: { advantage_audience: advantage_audience ?? 0 },
+    };
     if (age_min) targeting.age_min = age_min;
     if (age_max) targeting.age_max = age_max;
     if (custom_audience_id) targeting.custom_audiences = [{ id: String(custom_audience_id) }];
 
-    const effectiveBilling = optimization_goal === "LINK_CLICKS" && billing_event === "LINK_CLICKS" ? "IMPRESSIONS" : billing_event;
+    const effectiveBilling =
+      optimization_goal === "LINK_CLICKS" && billing_event === "LINK_CLICKS"
+        ? "IMPRESSIONS"
+        : billing_event;
 
-    const p = new URLSearchParams({
-      campaign_id: String(campaign_id), name: n,
-      daily_budget: String(Math.round(daily_budget_cents)),
-      targeting: JSON.stringify(targeting),
-      optimization_goal, billing_event: effectiveBilling,
-      status: "PAUSED", access_token: tok,
-    });
-    if (bid_amount_cents) p.set("bid_amount", String(Math.round(bid_amount_cents)));
-    return post(`${BASE}/${acct}/adsets`, p);
+    // Helper: build and fire the adset POST
+    const attemptCreate = async (includeBudget: boolean) => {
+      const p = new URLSearchParams({
+        campaign_id: String(campaign_id),
+        name: n,
+        targeting: JSON.stringify(targeting),
+        optimization_goal,
+        billing_event: effectiveBilling,
+        status: "PAUSED",
+        access_token: tok,
+      });
+      if (includeBudget && daily_budget_cents != null && daily_budget_cents > 0) {
+        p.set("daily_budget", String(Math.round(daily_budget_cents)));
+      }
+      if (bid_amount_cents) p.set("bid_amount", String(Math.round(bid_amount_cents)));
+      return post(`${BASE}/${acct}/adsets`, p) as Promise<Record<string, unknown>>;
+    };
+
+    // Attempt 1: exactly as requested
+    const result1 = await attemptCreate(true);
+    if (result1?.id) return result1;
+
+    const err1 = result1?.error as Record<string, unknown> | undefined;
+
+    // Detect budget conflict (CBO campaign + ad-set budget)
+    const isBudgetConflict =
+      String(err1?.error_subcode) === "1885621" ||
+      String(err1?.error_user_title ?? "").toLowerCase().includes("budget") ||
+      String(err1?.error_user_msg ?? "").toLowerCase().includes("budget");
+
+    if (isBudgetConflict) {
+      // This campaign uses CBO — the campaign owns the budget entirely.
+      // Ad sets under CBO must NOT send daily_budget. Retry without it.
+      const result2 = await attemptCreate(false);
+      if (result2?.id) {
+        const budgetNote = daily_budget_cents
+          ? ` The requested $${(daily_budget_cents / 100).toFixed(2)}/day budget was ignored because this is a CBO campaign — the campaign's budget covers all ad sets.`
+          : "";
+        return {
+          ...result2,
+          auto_fixed: true,
+          note: "Ad set created successfully. This campaign uses Campaign Budget Optimization (CBO) — the campaign-level budget is shared across all ad sets." + budgetNote,
+        };
+      }
+
+      return {
+        error: result2?.error ?? err1,
+        budget_conflict: true,
+        message: "Could not create ad set under this CBO campaign.",
+        manual_fix: "In Meta Ads Manager: Campaign → Edit → toggle off 'Advantage campaign budget' → Save. Then individual ad-set budgets will work.",
+      };
+    }
+
+    // Detect "daily_budget must be a number" — campaign needs a budget at adset level
+    const needsBudget =
+      String(err1?.message ?? "").includes("daily_budget must be a number") ||
+      String(err1?.message ?? "").toLowerCase().includes("param daily_budget");
+
+    if (needsBudget) {
+      return {
+        error: err1,
+        needs_budget: true,
+        message: "This campaign requires a daily budget at the ad-set level. Please provide daily_budget_cents (e.g. 5000 for $50/day) and retry.",
+      };
+    }
+
+    return result1;
   }
 
   if (name === "update_adset_targeting") {
@@ -477,6 +590,10 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
   // ─── Image Upload ────────────────────────────────────────────────────────
   if (name === "upload_ad_image") {
     const { image_base64, image_filename } = input as { image_base64: string; image_filename: string };
+
+    if (!image_base64 || image_base64.length < 100) {
+      return { error: "image_base64 is empty or too short. Make sure to pass the full IMAGE_N_BASE64 value from the user message." };
+    }
 
     // Convert base64 to binary
     const binaryString = atob(image_base64);
@@ -641,46 +758,59 @@ export async function POST(request: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (data: object) => controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
+      const send = (data: object) => {
+        try { controller.enqueue(encoder.encode(JSON.stringify(data) + "\n")); } catch { /* stream closed */ }
+      };
 
-      const claudeMessages: ClaudeMessage[] = messages.map((m: { role: string; content: string }) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      }));
+      try {
+        const claudeMessages: ClaudeMessage[] = messages.map((m: { role: string; content: string }) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        }));
 
-      let iteration = 0;
-      while (iteration++ < 10) {
-        const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
-          body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 2048, system: SYSTEM_PROMPT, tools: TOOLS, messages: claudeMessages }),
-        });
+        let iteration = 0;
+        while (iteration++ < 10) {
+          const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
+            body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 4096, system: SYSTEM_PROMPT, tools: TOOLS, messages: claudeMessages }),
+            // Note: no AbortSignal here — we let the request run to completion
+          });
 
-        if (!claudeRes.ok) {
-          const err = await claudeRes.json().catch(() => ({ message: claudeRes.statusText }));
-          send({ type: "error", text: `Claude API error ${claudeRes.status}: ${JSON.stringify(err)}` });
-          break;
-        }
+          if (!claudeRes.ok) {
+            const err = await claudeRes.json().catch(() => ({ message: claudeRes.statusText }));
+            send({ type: "error", text: `Claude API error ${claudeRes.status}: ${JSON.stringify(err)}` });
+            break;
+          }
 
-        const { content, stop_reason } = safeParseJSON(await claudeRes.text()) as { content: ClaudeContentBlock[]; stop_reason: string };
-
-        for (const block of content) {
-          if (block.type === "text" && block.text.trim()) send({ type: "text", text: block.text });
-        }
-
-        if (stop_reason === "end_turn") break;
-
-        if (stop_reason === "tool_use") {
-          claudeMessages.push({ role: "assistant", content });
-          const toolResults: ClaudeContentBlock[] = [];
+          const { content, stop_reason } = safeParseJSON(await claudeRes.text()) as { content: ClaudeContentBlock[]; stop_reason: string };
 
           for (const block of content) {
-            if (block.type !== "tool_use") continue;
-            send({ type: "tool_call", tool: block.name, input: block.input, text: fmtCall(block.name, block.input) });
+            if (block.type === "text" && block.text.trim()) send({ type: "text", text: block.text });
+          }
+
+          if (stop_reason === "end_turn") break;
+
+          if (stop_reason === "tool_use") {
+            claudeMessages.push({ role: "assistant", content });
+            const toolResults: ClaudeContentBlock[] = [];
+
+            for (const block of content) {
+              if (block.type !== "tool_use") continue;
+              send({ type: "tool_call", tool: block.name, input: block.input, text: fmtCall(block.name, block.input) });
+
+              // Send a keepalive ping so proxies/CDN don't close the connection during long ops
+            send({ type: "ping" });
 
             let resultText: string;
+            const toolTimeout = block.name === "upload_ad_image" ? 120_000 : 30_000;
             try {
-              const result = await executeTool(block.name, block.input, accessToken, adAccountId);
+              const result = await Promise.race([
+                executeTool(block.name, block.input, accessToken, adAccountId),
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error(`Tool ${block.name} timed out after ${toolTimeout / 1000}s`)), toolTimeout)
+                ),
+              ]);
               resultText = JSON.stringify(result);
               send({ type: "tool_result", tool: block.name, text: fmtResult(block.name, result), data: result });
             } catch (err) {
@@ -688,18 +818,21 @@ export async function POST(request: NextRequest) {
               send({ type: "error", text: "Tool error: " + String(err) });
             }
 
-            toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultText });
+              toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultText });
+            }
+
+            claudeMessages.push({ role: "user", content: toolResults });
+            continue;
           }
 
-          claudeMessages.push({ role: "user", content: toolResults });
-          continue;
+          break;
         }
-
-        break;
+      } catch (fatalErr) {
+        send({ type: "error", text: `Server error: ${String(fatalErr)}` });
+      } finally {
+        send({ type: "done" });
+        try { controller.close(); } catch { /* already closed */ }
       }
-
-      send({ type: "done" });
-      controller.close();
     },
   });
 
@@ -717,6 +850,7 @@ function fmtCall(name: string, i: ToolInput): string {
     case "get_campaign_insights":      return `Fetching campaign performance (${i.date_preset})...`;
     case "create_campaign":            return `Creating campaign "${i.name}" (${i.objective})...`;
     case "update_campaign_budget":     return `Updating campaign ${i.campaign_id} budget → ${$(i.new_daily_budget_cents)}/day`;
+    case "remove_campaign_budget":     return `Removing campaign-level budget from campaign ${i.campaign_id}...`;
     case "update_campaign_status":     return `Setting campaign ${i.campaign_id} → ${i.status}`;
     case "update_campaign_objective":  return `Updating campaign ${i.campaign_id} objective → ${i.objective}`;
     case "delete_campaign":            return `⚠️ Deleting campaign "${i.campaign_name}" permanently...`;
@@ -753,12 +887,21 @@ function fmtResult(name: string, result: unknown): string {
     case "get_campaign_insights":      return `Insights for ${count() ?? "?"} campaign${count() !== 1 ? "s" : ""}`;
     case "create_campaign":            return r?.id ? `Campaign created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
     case "update_campaign_budget":     return ok("Budget updated");
+    case "remove_campaign_budget":     return r?.cbo_active ? "CBO active — ad sets don't need their own budget" : (r?.success ? "Campaign budget removed ✓" : `API note: ${r?.recommendation ?? r?.message ?? JSON.stringify(r)}`);
     case "update_campaign_status":     return ok("Status updated");
     case "update_campaign_objective":  return ok("Objective updated");
     case "delete_campaign":            return ok("Campaign deleted");
     case "bulk_update_campaign_status":return `Bulk update: ${r?.succeeded}/${r?.total} succeeded ✓`;
     case "list_adsets":                return `Found ${count() ?? "?"} ad set${count() !== 1 ? "s" : ""}`;
-    case "create_adset":               return r?.id ? `Ad set created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
+    case "create_adset":               {
+      if (r?.id) {
+        const note = r?.auto_fixed ? " (CBO — campaign budget applies)" : "";
+        return `Ad set created ✓ (ID: ${r.id})${note}`;
+      }
+      if (r?.budget_conflict) return `Budget conflict — ${r?.manual_fix ?? "disable CBO in Ads Manager"}`;
+      if (r?.needs_budget) return "Needs daily_budget_cents — ask user for amount";
+      return `Response: ${JSON.stringify(r)}`;
+    }
     case "update_adset_targeting":     return ok("Targeting updated");
     case "update_adset_budget":        return ok("Ad set budget updated");
     case "update_adset_status":        return ok("Ad set status updated");
