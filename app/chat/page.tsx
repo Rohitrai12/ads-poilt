@@ -6,8 +6,6 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
@@ -24,8 +22,8 @@ type Step = {
 
 type AttachedImage = {
   filename: string;
-  base64: string;          // raw base64 (no data URI prefix)
-  dataUrl: string;         // full data URI for preview
+  base64: string;
+  dataUrl: string;
   mimeType: string;
   sizeLabel: string;
 };
@@ -127,13 +125,8 @@ const TOOL_ICONS: Record<string, string> = {
   list_adsets: "⬡", create_adset: "◆", update_adset_targeting: "◎",
   update_adset_budget: "◎", update_adset_status: "◉", get_adset_insights: "◈",
   list_ads: "⬡", update_ad_status: "◉", get_ad_insights: "◈",
-  upload_ad_image: "◼", create_ad: "◆",
+  upload_ad_image: "◼", create_ad: "◆", create_ad_from_creative: "◆",
   list_custom_audiences: "⬡", create_custom_audience: "◆", create_lookalike_audience: "◆",
-};
-
-const STATUS_LABELS: Record<number, string> = {
-  1: "Active", 2: "Disabled", 3: "Unsettled", 7: "Pending review",
-  8: "Pending closure", 9: "In grace period", 101: "Temporarily unavailable", 201: "Closed",
 };
 
 // ─── Markdown Renderer ────────────────────────────────────────────────────────
@@ -294,17 +287,14 @@ function TypingCursor() {
 function ImagePill({ img, onRemove }: { img: AttachedImage; onRemove?: () => void }) {
   return (
     <div className="group relative flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 p-1.5 pr-2.5">
-      {/* Thumbnail */}
       <div className="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-border/40">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={img.dataUrl} alt={img.filename} className="h-full w-full object-cover" />
       </div>
-      {/* Info */}
       <div className="min-w-0">
         <div className="max-w-[120px] truncate text-[11px] font-medium text-foreground">{img.filename}</div>
         <div className="text-[10px] text-muted-foreground">{img.sizeLabel}</div>
       </div>
-      {/* Remove button */}
       {onRemove && (
         <button
           onClick={onRemove}
@@ -391,7 +381,6 @@ function UserMessage({ msg }: { msg: Message }) {
   return (
     <div className="flex w-full justify-end gap-4 px-4 py-5" style={{ animation: "fadeSlideIn 0.15s ease-out" }}>
       <div className="max-w-[75%] space-y-2">
-        {/* Image previews */}
         {msg.images && msg.images.length > 0 && (
           <div className="flex flex-wrap justify-end gap-2">
             {msg.images.map((img, i) => (
@@ -399,7 +388,6 @@ function UserMessage({ msg }: { msg: Message }) {
             ))}
           </div>
         )}
-        {/* Text */}
         {msg.content && (
           <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-7 text-white shadow-sm dark:bg-zinc-700">{msg.content}</div>
         )}
@@ -436,7 +424,6 @@ function Sidebar({
       className="flex flex-col border-r border-border/50 bg-muted/10 transition-all duration-300 shrink-0 overflow-hidden"
       style={{ width: collapsed ? "52px" : "260px", minWidth: collapsed ? "52px" : "260px" }}
     >
-      {/* Header */}
       <div className={`flex items-center border-b border-border/30 px-3 py-3 ${collapsed ? "justify-center" : "justify-between"}`}>
         {!collapsed && (
           <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">Chats</span>
@@ -522,7 +509,6 @@ function Sidebar({
                           <span className="flex-1 min-w-0 truncate text-xs leading-5">{session.title}</span>
                         </div>
                         <div className="mt-0.5 text-[10px] text-muted-foreground/40">{formatRelativeTime(session.updatedAt)}</div>
-
                         <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden items-center gap-0.5 group-hover/item:flex">
                           <div className="absolute -left-6 top-0 h-full w-6 bg-gradient-to-l from-muted/80 to-transparent" />
                           <span role="button" title="Rename"
@@ -567,7 +553,7 @@ function FacebookIcon({ size = 20, color = "currentColor" }: { size?: number; co
   );
 }
 
-// ─── Connect screen (manual credentials) ─────────────────────────────────────
+// ─── Connect screen ───────────────────────────────────────────────────────────
 
 function ConnectScreen({ onConnect }: {
   onConnect: (accessToken: string, adAccountId: string) => void;
@@ -579,7 +565,6 @@ function ConnectScreen({ onConnect }: {
 
   const handleSubmit = async () => {
     const cleanToken = token.trim();
-    // Accept either bare numeric ID or "act_XXXXXX"
     const cleanAcct = adAccountId.trim().replace(/^act_/i, "");
     if (!cleanToken) { setError("Access token is required."); return; }
     if (!cleanAcct || !/^\d+$/.test(cleanAcct)) { setError("Ad Account ID must be numeric (e.g. 123456789)."); return; }
@@ -587,7 +572,6 @@ function ConnectScreen({ onConnect }: {
     setError("");
     setLoading(true);
     try {
-      // Validate by fetching the account
       const res = await fetch(
         `https://graph.facebook.com/v25.0/act_${cleanAcct}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(cleanToken)}`
       );
@@ -617,8 +601,6 @@ function ConnectScreen({ onConnect }: {
 
       <Card className="w-full max-w-sm border-border/60">
         <CardContent className="space-y-4 pt-5">
-
-          {/* Access Token */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-foreground">Access Token</label>
             <Input
@@ -641,7 +623,6 @@ function ConnectScreen({ onConnect }: {
             </p>
           </div>
 
-          {/* Ad Account ID */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-foreground">Ad Account ID</label>
             <div className="relative flex items-center">
@@ -660,7 +641,6 @@ function ConnectScreen({ onConnect }: {
             </p>
           </div>
 
-          {/* Error */}
           {error && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {error}
@@ -687,7 +667,6 @@ function ConnectScreen({ onConnect }: {
         </CardContent>
       </Card>
 
-      {/* Quick help */}
       <details className="w-full max-w-sm">
         <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
           How to get a long-lived token ▸
@@ -702,13 +681,110 @@ function ConnectScreen({ onConnect }: {
   );
 }
 
+// ─── Token Refresh Banner ─────────────────────────────────────────────────────
+
+function TokenRefreshBanner({
+  accountName,
+  token,
+  onTokenChange,
+  onSubmit,
+  onDismiss,
+  loading,
+  error,
+}: {
+  accountName: string;
+  token: string;
+  onTokenChange: (v: string) => void;
+  onSubmit: () => void;
+  onDismiss: () => void;
+  loading: boolean;
+  error: string;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+
+  return (
+    <div
+      className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-4 py-3 md:px-6"
+      style={{ animation: "fadeSlideIn 0.2s ease-out" }}
+    >
+      <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-center">
+        {/* Icon + message */}
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/15">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-amber-400">Access token expired</p>
+            <p className="text-[11px] text-amber-300/70">
+              Your token for <span className="font-medium text-amber-300">{accountName}</span> has expired. Paste a fresh token to continue — your chat history is preserved.
+            </p>
+          </div>
+        </div>
+
+        {/* Input + buttons */}
+        <div className="flex shrink-0 flex-col gap-1.5 sm:w-72">
+          <div className="flex gap-1.5">
+            <Input
+              ref={ref}
+              type="password"
+              placeholder="Paste new access token…"
+              value={token}
+              onChange={(e) => onTokenChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
+              disabled={loading}
+              className="h-8 flex-1 border-amber-500/30 bg-amber-950/50 font-mono text-[11px] text-amber-100 placeholder:text-amber-700 focus-visible:border-amber-500/60 focus-visible:ring-0"
+            />
+            <button
+              onClick={onSubmit}
+              disabled={loading || !token.trim()}
+              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-amber-500 px-3 text-[11px] font-semibold text-black transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {loading ? (
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              ) : (
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12h14M12 5l7 7-7 7" />
+                </svg>
+              )}
+              Refresh
+            </button>
+            <button
+              onClick={onDismiss}
+              title="Dismiss"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-amber-500/60 transition-colors hover:bg-amber-500/10 hover:text-amber-400"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          {error && <p className="text-[10px] text-red-400">{error}</p>}
+          <p className="text-[10px] text-amber-700">
+            Get a fresh token from{" "}
+            <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer"
+              className="underline underline-offset-2 hover:text-amber-500">
+              Graph API Explorer
+            </a>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const ANIMATION_STYLES = `
   @keyframes fadeSlideIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
   @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
   @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
 `;
 
-// ─── Main Component ──────────────────────────────────────────────────────────────────────────────
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -725,6 +801,12 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // ── Auth expiry ───────────────────────────────────────────────────────────
+  const [authExpired, setAuthExpired] = useState(false);
+  const [refreshToken, setRefreshToken] = useState("");
+  const [refreshLoading, setRefreshLoading] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -779,15 +861,70 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   const disconnect = () => {
     setAccessToken(""); setAdAccountId(""); setSelectedAccount(null); setMessages([]);
     setPhase("connect"); setActiveSessionId(null); setAttachedImages([]);
+    setAuthExpired(false); setRefreshToken(""); setRefreshError("");
     if (typeof window !== "undefined") window.localStorage.removeItem(LS_AUTH);
   };
+
+  // ── Auth error detection ──────────────────────────────────────────────────
+
+  function isAuthError(text: string): boolean {
+    try {
+      const jsonMatch = text.match(/Error:\s*(\{.*\})/s);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[1]);
+        if (parsed.code === 190) return true;
+      }
+      if (/"code"\s*:\s*190/.test(text)) return true;
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  // ── Token refresh (keeps all messages / sessions intact) ──────────────────
+
+  const handleTokenRefresh = useCallback(async () => {
+    const newToken = refreshToken.trim();
+    if (!newToken || !adAccountId) return;
+    setRefreshLoading(true);
+    setRefreshError("");
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v25.0/act_${adAccountId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(newToken)}`
+      );
+      const data = await res.json();
+      if (data.error) {
+        setRefreshError(data.error.message ?? "Invalid token — please try again.");
+        setRefreshLoading(false);
+        return;
+      }
+      const updatedAcct: AdAccount = {
+        id: `act_${adAccountId}`,
+        name: data.name ?? selectedAccount?.name ?? `Account ${adAccountId}`,
+        account_status: data.account_status ?? 1,
+        currency: data.currency ?? "USD",
+        timezone_name: data.timezone_name ?? "",
+      };
+      setAccessToken(newToken);
+      setSelectedAccount(updatedAcct);
+      setAuthExpired(false);
+      setRefreshToken("");
+      setRefreshError("");
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: newToken, adAccountId, selectedAccount: updatedAcct }));
+      }
+      setTimeout(() => inputRef.current?.focus(), 100);
+    } catch {
+      setRefreshError("Network error — could not reach Meta API.");
+    } finally {
+      setRefreshLoading(false);
+    }
+  }, [refreshToken, adAccountId, selectedAccount]);
 
   // ── Image attachment ──────────────────────────────────────────────────────
 
   const handleImageFiles = useCallback((files: FileList | File[]) => {
     const fileArr = Array.from(files);
     const validTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-    const maxSize = 4 * 1024 * 1024; // 4MB per image
+    const maxSize = 4 * 1024 * 1024;
 
     for (const file of fileArr) {
       if (!validTypes.includes(file.type)) {
@@ -802,17 +939,10 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
-        // Strip the "data:image/...;base64," prefix to get raw base64
         const base64 = dataUrl.split(",")[1] ?? "";
         setAttachedImages((prev) => [
           ...prev,
-          {
-            filename: file.name,
-            base64,
-            dataUrl,
-            mimeType: file.type,
-            sizeLabel: formatBytes(file.size),
-          },
+          { filename: file.name, base64, dataUrl, mimeType: file.type, sizeLabel: formatBytes(file.size) },
         ]);
       };
       reader.readAsDataURL(file);
@@ -821,21 +951,19 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) handleImageFiles(e.target.files);
-    e.target.value = ""; // reset so same file can be picked again
+    e.target.value = "";
   };
 
   const removeImage = (idx: number) => {
     setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  // Drag & drop on the input area
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); };
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.files.length) handleImageFiles(e.dataTransfer.files);
   };
 
-  // Paste images from clipboard
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = Array.from(e.clipboardData.items);
     const imageItems = items.filter((item) => item.type.startsWith("image/"));
@@ -874,15 +1002,11 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     const hasImages = attachedImages.length > 0;
     if ((!hasText && !hasImages) || loading || !accessToken || !selectedAccount) return;
 
-
-    // Build a rich text content that includes image context
     let richContent = input.trim();
     if (hasImages && !hasText) {
       richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating an ad.`;
     }
 
-    // Build the message for the API — include image data as base64 references
-    // We embed image instructions so Claude knows to use upload_ad_image
     let apiContent = richContent;
     if (hasImages) {
       const imageDescriptions = attachedImages.map((img, i) =>
@@ -920,7 +1044,6 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     setAttachedImages([]);
     setLoading(true);
 
-    // Create session on first message
     const isFirst = messages.length === 0;
     const sessionId = activeSessionId ?? uid();
     if (isFirst || !activeSessionId) {
@@ -953,6 +1076,10 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           try {
             const step: Step = JSON.parse(line);
             if (step.type === "done") continue;
+            // Detect expired token (Meta error code 190)
+            if (step.type === "tool_result" && isAuthError(step.text)) {
+              setAuthExpired(true);
+            }
             setMessages((prev) => {
               const updated = prev.map((m) =>
                 m.id === assistantMsg.id
@@ -982,9 +1109,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
       setLoading(false);
       inputRef.current?.focus();
     }
-  }, [input, attachedImages, loading, accessToken, selectedAccount, messages, activeSessionId]);
-
-  // Auth is persisted inside handleManualConnect
+  }, [input, attachedImages, loading, accessToken, selectedAccount, messages, activeSessionId, adAccountId]);
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -996,12 +1121,11 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     "Show ad sets for my best campaign",
     "Pause all underperforming campaigns",
     "Create a new ad with an image",
+    "Create a text/link ad without an image",
     "List my custom audiences",
   ];
 
-  const accountSessions = sessions;
-
-  const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !loading;
+  const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !loading && !authExpired;
 
   return (
     <>
@@ -1022,18 +1146,33 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           <div className="flex items-center gap-2">
             {phase === "chat" && selectedAccount ? (
               <>
-                <Badge variant="secondary" className="hidden gap-1.5 font-mono text-[10px] sm:flex">
-                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500" />{selectedAccount.name}
+                <Badge
+                  variant="secondary"
+                  className={`hidden gap-1.5 font-mono text-[10px] sm:flex ${authExpired ? "border-amber-500/30 bg-amber-500/10 text-amber-400" : ""}`}
+                >
+                  <span className={`inline-block h-1.5 w-1.5 rounded-full ${authExpired ? "bg-amber-500" : "bg-green-500"}`} />
+                  {authExpired ? "Token expired" : selectedAccount.name}
                 </Badge>
                 <Button variant="ghost" size="sm" onClick={disconnect} className="text-xs text-muted-foreground hover:text-foreground">Disconnect</Button>
               </>
             ) : (
-              <Badge variant="outline" className="font-mono text-[10px]">
-                "NOT CONNECTED"
-              </Badge>
+              <Badge variant="outline" className="font-mono text-[10px]">NOT CONNECTED</Badge>
             )}
           </div>
         </div>
+
+        {/* Token refresh banner — shown inline when token expires */}
+        {phase === "chat" && authExpired && (
+          <TokenRefreshBanner
+            accountName={selectedAccount?.name ?? "your account"}
+            token={refreshToken}
+            onTokenChange={setRefreshToken}
+            onSubmit={handleTokenRefresh}
+            onDismiss={() => { setAuthExpired(false); setRefreshError(""); }}
+            loading={refreshLoading}
+            error={refreshError}
+          />
+        )}
 
         {/* Body */}
         <div className="flex min-h-0 flex-1">
@@ -1041,7 +1180,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           {/* Sidebar */}
           {phase === "chat" && (
             <Sidebar
-              sessions={accountSessions}
+              sessions={sessions}
               activeId={activeSessionId}
               onSelect={loadSession}
               onNew={startNewChat}
@@ -1078,12 +1217,11 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                           </button>
                         ))}
                       </div>
-                      {/* Image upload hint */}
                       <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/20 px-4 py-2.5 text-xs text-muted-foreground">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                           <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
                         </svg>
-                        <span>Attach images to create ads — drag & drop, paste, or click the image button below</span>
+                        <span>Attach images for image ads — or skip to create text/link ads without images</span>
                       </div>
                     </div>
                   ) : (
@@ -1102,7 +1240,6 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                 <div className="shrink-0 border-t border-border/50 px-4 py-4 md:px-6" onDragOver={handleDragOver} onDrop={handleDrop}>
                   <div className="mx-auto w-full max-w-3xl">
 
-                    {/* Attached image previews */}
                     {attachedImages.length > 0 && (
                       <div className="mb-2 flex flex-wrap gap-2">
                         {attachedImages.map((img, i) => (
@@ -1112,7 +1249,6 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                     )}
 
                     <div className="relative flex items-end rounded-xl border border-border/60 bg-muted/20 shadow-sm transition-colors focus-within:border-border focus-within:bg-background">
-                      {/* Image upload button */}
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
@@ -1136,7 +1272,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
 
                       <Input
                         ref={inputRef}
-                        placeholder={attachedImages.length > 0 ? "Describe how to use this image for an ad…" : "Message Meta Ads AI…"}
+                        placeholder={authExpired ? "Refresh your token above to continue…" : attachedImages.length > 0 ? "Describe how to use this image for an ad…" : "Message Meta Ads AI…"}
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKey}
@@ -1159,7 +1295,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                       </button>
                     </div>
                     <p className="mt-2 text-center text-[11px] text-muted-foreground/50">
-                      Actions are executed immediately · Attach images to create ads (JPG, PNG, GIF, WebP · max 4 MB)
+                      Actions are executed immediately · Image ads: attach JPG/PNG/GIF/WebP (max 4 MB) · Text/link ads: no image needed
                     </p>
                   </div>
                 </div>

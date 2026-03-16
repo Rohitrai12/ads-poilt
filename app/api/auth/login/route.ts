@@ -1,3 +1,4 @@
+// app/api/auth/login/route.ts
 import { NextRequest, NextResponse } from "next/server"
 
 import { authenticateUser, signAuthToken } from "@/lib/auth"
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
     const token = signAuthToken(user)
 
     const response = NextResponse.json(
-      { user: { email: user.email } },
+      { user: { email: user.email, name: user.name } },
       { status: 200 }
     )
 
@@ -52,4 +53,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-

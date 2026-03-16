@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useEffect, useRef, useState } from 'react'
 
 type Tab = 'meta' | 'google' | 'tiktok'
@@ -91,8 +92,10 @@ export default function Home() {
       {/* NAV */}
       <nav id="nav" className={scrolled ? 'scrolled' : ''}>
         <div className="nav-logo">
-          <div className="z-icon">Z</div>
-          Zofi
+          {/* <div className="z-icon">Z</div>
+          Zofi */}
+
+          <Image src={"/logo-with-text.png"} alt="logo" width={150} height={150} style={{borderRadius:"50%"}}/>
         </div>
         <ul className="nav-links">
           {['Features', 'Platforms', 'KPIs', 'Chat', 'Pricing'].map((l) => (

@@ -10,13 +10,23 @@
 !.yarn/releases
 !.yarn/versions
 
+env
+
+.env
+.env.local
+.env.*
+
 
 # testing
 /coverage
 
 # next.js
 /.next/
-/out/
+/out/ 
+
+.env.zip
+
+.env.local
 
 # production
 /build

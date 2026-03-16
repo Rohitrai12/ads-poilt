@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 // ─── Next.js runtime config ───────────────────────────────────────────────────
-export const runtime = "nodejs";          // use Node.js runtime (not edge) for long requests
-export const maxDuration = 300;           // 5 min max (Vercel Pro / self-hosted)
+export const runtime = "nodejs";
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 const META_VERSION = "v25.0";
@@ -23,7 +23,7 @@ You manage the full hierarchy: Campaigns → Ad Sets → Ads, plus Custom Audien
 
 CAMPAIGNS: list, get, create, update budget/status/objective, delete, insights
 AD SETS: list, create with targeting, update budget/status/targeting, insights
-ADS: list (with full creative name/body/image), get per-ad insights with ad names, update status, CREATE new ads with images
+ADS: list (with full creative name/body/image), get per-ad insights with ad names, update status, CREATE new ads with or without images
 AUDIENCES: list, create custom (WEBSITE/CUSTOM/ENGAGEMENT subtypes), create lookalike
 BULK: pause or activate multiple campaigns at once
 
@@ -40,7 +40,13 @@ Behavioral rules:
 10. LINK_CLICKS optimization always uses IMPRESSIONS billing (auto-corrected).
 11. Always treat ALL IDs as strings, never numbers.
 12. For bulk ops, list campaigns first to confirm scope before executing.
-13. For create_ad: the image_hash comes from uploading the image via the upload_ad_image tool first. Always upload the image before creating the ad. The ad_creative requires a page_id — ask the user for their Facebook Page ID if not provided.
+13. For create_ad: image_hash is OPTIONAL.
+    - WITH image: call upload_ad_image first to get the hash, then pass image_hash to create_ad.
+    - WITHOUT image (text/link ad): call create_ad directly with headline + body + link_url — no image_hash needed.
+    - The ad creative requires a page_id — ask the user for their Facebook Page ID if not provided.
+    - To reuse an already-existing creative, use create_ad_from_creative with its creative_id.
+    - After create_ad succeeds, always tell the user the verified_campaign_id and verified_adset_id so they know exactly where to find the ad in Meta Ads Manager.
+    - If verify_error is present in the response, warn the user that the ad may not have saved correctly.
 14. CAMPAIGN BUDGET vs AD SET BUDGET: Meta CBO (Campaign Budget Optimization) campaigns own the budget — ad sets under them must NOT have a daily_budget. The create_adset tool handles this automatically: if a budget conflict occurs it retries without daily_budget. If auto_fixed=true is returned, tell the user the ad set was created and CBO manages the budget. NEVER call remove_campaign_budget before create_adset — it doesn't work and wastes a round-trip. Just call create_adset directly.
 15. IMAGE UPLOADS: When the user provides image data (base64), use the exact IMAGE_N_BASE64 value provided in the message for upload_ad_image. Never truncate or modify image base64 data.`;
 
@@ -258,14 +264,20 @@ const TOOLS = [
   },
   {
     name: "create_ad",
-    description: "Create a new ad within an ad set. Requires an image_hash (from upload_ad_image) and a Facebook Page ID. The ad starts PAUSED. Use this to create the actual ad creative with headline, body copy, and a destination URL.",
+    description: `Create a new ad within an ad set. Requires a Facebook Page ID. The ad starts PAUSED.
+Two modes:
+- WITH IMAGE: provide image_hash (from upload_ad_image) along with the other fields.
+- WITHOUT IMAGE (text/link ad): omit image_hash entirely — headline, body, and link_url are sufficient to create a link-preview ad.`,
     input_schema: {
       type: "object",
       properties: {
         adset_id: { type: "string", description: "The ad set to place this ad in" },
         name: { type: "string", description: "Internal name for this ad" },
         page_id: { type: "string", description: "Facebook Page ID that will sponsor the ad" },
-        image_hash: { type: "string", description: "Image hash from upload_ad_image tool" },
+        image_hash: {
+          type: "string",
+          description: "Optional. Image hash from upload_ad_image. Omit entirely for text-only / link-preview ads.",
+        },
         headline: { type: "string", description: "Primary headline text (max 40 chars recommended)" },
         body: { type: "string", description: "Main ad body copy / primary text" },
         link_url: { type: "string", description: "Destination URL when user clicks the ad" },
@@ -276,7 +288,25 @@ const TOOLS = [
         },
         description: { type: "string", description: "Optional link description shown below headline" },
       },
-      required: ["adset_id", "name", "page_id", "image_hash", "headline", "body", "link_url", "call_to_action"],
+      required: ["adset_id", "name", "page_id", "headline", "body", "link_url", "call_to_action"],
+    },
+  },
+  {
+    name: "create_ad_from_creative",
+    description: "Create an ad using an existing creative ID. Use when the user already has a creative_id they want to reuse across ad sets.",
+    input_schema: {
+      type: "object",
+      properties: {
+        adset_id: { type: "string", description: "The ad set to place this ad in" },
+        name: { type: "string", description: "Internal name for this ad" },
+        creative_id: { type: "string", description: "Existing ad creative ID" },
+        status: {
+          type: "string",
+          enum: ["ACTIVE", "PAUSED"],
+          description: "Initial status. Defaults to PAUSED.",
+        },
+      },
+      required: ["adset_id", "name", "creative_id"],
     },
   },
 
@@ -294,10 +324,7 @@ const TOOLS = [
       properties: {
         name: { type: "string" },
         description: { type: "string" },
-        subtype: {
-          type: "string",
-          enum: ["WEBSITE", "ENGAGEMENT", "CUSTOM"],
-        },
+        subtype: { type: "string", enum: ["WEBSITE", "ENGAGEMENT", "CUSTOM"] },
         customer_file_source: { type: "string", enum: ["USER_PROVIDED_ONLY", "PARTNER_PROVIDED_ONLY", "BOTH_USER_AND_PARTNER_PROVIDED"] },
         pixel_id: { type: "string" },
         retention_days: { type: "number" },
@@ -326,6 +353,15 @@ type ToolInput = Record<string, unknown>;
 
 async function post(url: string, params: URLSearchParams): Promise<unknown> {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: params });
+  return safeParseJSON(await res.text());
+}
+
+// Meta's ad/creative endpoints are more reliable with multipart/form-data,
+// especially when fields contain nested JSON strings.
+async function postForm(url: string, fields: Record<string, string>): Promise<unknown> {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  const res = await fetch(url, { method: "POST", body: form });
   return safeParseJSON(await res.text());
 }
 
@@ -368,20 +404,9 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
     return post(`${BASE}/${String(campaign_id)}`, new URLSearchParams({ daily_budget: String(Math.round(new_daily_budget_cents)), access_token: tok }));
   }
 
-  // ─── Remove campaign budget (disable CBO) ────────────────────────────────
   if (name === "remove_campaign_budget") {
-    const { campaign_id } = input as { campaign_id: string };
-    const id = String(campaign_id);
-
-    // Meta's Marketing API does not support removing a campaign-level budget or disabling
-    // CBO via a simple API call when the campaign is already live/paused with a budget set.
-    // The budget_rebalance_flag field is read-only after campaign creation in most cases.
-    // We return honest instructions rather than pretending it worked.
-    //
-    // The CORRECT approach for CBO campaigns: ad sets simply don't need a budget —
-    // the campaign budget is distributed automatically. Use create_adset WITHOUT daily_budget_cents.
-    //
-    // For users who genuinely want per-adset budgets, they must toggle CBO off in Ads Manager.
+    // Meta's Marketing API does not support removing a campaign-level budget programmatically
+    // after the campaign is created. Return honest instructions instead.
     return {
       success: false,
       cbo_active: true,
@@ -454,7 +479,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
         ? "IMPRESSIONS"
         : billing_event;
 
-    // Helper: build and fire the adset POST
     const attemptCreate = async (includeBudget: boolean) => {
       const p = new URLSearchParams({
         campaign_id: String(campaign_id),
@@ -472,21 +496,17 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
       return post(`${BASE}/${acct}/adsets`, p) as Promise<Record<string, unknown>>;
     };
 
-    // Attempt 1: exactly as requested
     const result1 = await attemptCreate(true);
     if (result1?.id) return result1;
 
     const err1 = result1?.error as Record<string, unknown> | undefined;
 
-    // Detect budget conflict (CBO campaign + ad-set budget)
     const isBudgetConflict =
       String(err1?.error_subcode) === "1885621" ||
       String(err1?.error_user_title ?? "").toLowerCase().includes("budget") ||
       String(err1?.error_user_msg ?? "").toLowerCase().includes("budget");
 
     if (isBudgetConflict) {
-      // This campaign uses CBO — the campaign owns the budget entirely.
-      // Ad sets under CBO must NOT send daily_budget. Retry without it.
       const result2 = await attemptCreate(false);
       if (result2?.id) {
         const budgetNote = daily_budget_cents
@@ -498,7 +518,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
           note: "Ad set created successfully. This campaign uses Campaign Budget Optimization (CBO) — the campaign-level budget is shared across all ad sets." + budgetNote,
         };
       }
-
       return {
         error: result2?.error ?? err1,
         budget_conflict: true,
@@ -507,7 +526,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
       };
     }
 
-    // Detect "daily_budget must be a number" — campaign needs a budget at adset level
     const needsBudget =
       String(err1?.message ?? "").includes("daily_budget must be a number") ||
       String(err1?.message ?? "").toLowerCase().includes("param daily_budget");
@@ -595,14 +613,12 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
       return { error: "image_base64 is empty or too short. Make sure to pass the full IMAGE_N_BASE64 value from the user message." };
     }
 
-    // Convert base64 to binary
     const binaryString = atob(image_base64);
     const bytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i);
     }
 
-    // Determine MIME type from filename
     const ext = image_filename.toLowerCase().split(".").pop() ?? "jpg";
     const mimeMap: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
     const mimeType = mimeMap[ext] ?? "image/jpeg";
@@ -614,7 +630,6 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
     const res = await fetch(`${BASE}/${acct}/adimages`, { method: "POST", body: formData });
     const result = safeParseJSON(await res.text()) as Record<string, unknown>;
 
-    // Meta returns: { images: { "<filename>": { hash, url, ... } } }
     if (result.images) {
       const images = result.images as Record<string, { hash: string; url: string; width: number; height: number }>;
       const firstKey = Object.keys(images)[0];
@@ -626,55 +641,143 @@ async function executeTool(name: string, input: ToolInput, accessToken: string, 
     return result;
   }
 
-  // ─── Create Ad ───────────────────────────────────────────────────────────
+  // ─── Create Ad (with OR without image) ──────────────────────────────────
   if (name === "create_ad") {
     const {
-      adset_id, name: adName, page_id, image_hash,
-      headline, body, link_url, call_to_action, description,
+      adset_id,
+      name: adName,
+      page_id,
+      image_hash,      // intentionally optional
+      headline,
+      body,
+      link_url,
+      call_to_action,
+      description,
     } = input as {
-      adset_id: string; name: string; page_id: string; image_hash: string;
-      headline: string; body: string; link_url: string;
-      call_to_action: string; description?: string;
+      adset_id: string;
+      name: string;
+      page_id: string;
+      image_hash?: string;
+      headline: string;
+      body: string;
+      link_url: string;
+      call_to_action: string;
+      description?: string;
     };
 
-    // Step 1: Create the ad creative
-    const objectStorySpec: Record<string, unknown> = {
+    const hasImage = image_hash && image_hash.trim().length > 0;
+
+    // Build link_data — only include image_hash when provided and non-empty
+    const linkData: Record<string, unknown> = {
+      link: link_url,
+      message: body,
+      name: headline,
+      call_to_action: { type: call_to_action },
+      ...(description ? { description } : {}),
+    };
+    if (hasImage) linkData.image_hash = image_hash!.trim();
+
+    // Step 1: Create the ad creative (multipart avoids URL-encoding issues with nested JSON)
+    const objectStorySpec = {
       page_id: String(page_id),
-      link_data: {
-        image_hash,
-        link: link_url,
-        message: body,
-        name: headline,
-        call_to_action: { type: call_to_action },
-        ...(description ? { description } : {}),
-      },
+      link_data: linkData,
     };
 
-    const creativeParams = new URLSearchParams({
+    const creativeRes = await postForm(`${BASE}/${acct}/adcreatives`, {
       name: `${adName} Creative`,
       object_story_spec: JSON.stringify(objectStorySpec),
       access_token: tok,
-    });
+    }) as Record<string, unknown>;
 
-    const creativeRes = await post(`${BASE}/${acct}/adcreatives`, creativeParams) as Record<string, unknown>;
-    if (creativeRes.error) return { error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}` };
+    if (creativeRes.error) {
+      return {
+        error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}`,
+        ad_type: hasImage ? "image" : "text_link",
+        creative_payload: objectStorySpec,
+        debug: { page_id: String(page_id), adset_id: String(adset_id), acct },
+      };
+    }
 
     const creativeId = String(creativeRes.id);
 
-    // Step 2: Create the ad using the creative
-    const adParams = new URLSearchParams({
+    // Step 2: Create the ad using the creative (multipart for same reason)
+    const adRes = await postForm(`${BASE}/${acct}/ads`, {
       name: adName,
       adset_id: String(adset_id),
       creative: JSON.stringify({ creative_id: creativeId }),
       status: "PAUSED",
       access_token: tok,
-    });
+    }) as Record<string, unknown>;
 
-    const adRes = await post(`${BASE}/${acct}/ads`, adParams) as Record<string, unknown>;
     if (adRes.id) {
-      return { success: true, ad_id: adRes.id, creative_id: creativeId, status: "PAUSED" };
+      // Step 3: Verify the ad actually exists by reading it back
+      const verifyRes = await fetch(
+        `${BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`
+      );
+      const verified = safeParseJSON(await verifyRes.text()) as Record<string, unknown>;
+
+      return {
+        success: true,
+        ad_id: adRes.id,
+        creative_id: creativeId,
+        status: "PAUSED",
+        ad_type: hasImage ? "image" : "text_link",
+        // Include verified data so Claude can confirm exact IDs to the user
+        verified_ad_id: verified?.id,
+        verified_adset_id: verified?.adset_id,
+        verified_campaign_id: verified?.campaign_id,
+        verified_status: verified?.status,
+        verify_error: verified?.error ? JSON.stringify(verified.error) : undefined,
+      };
     }
-    return adRes;
+
+    // Ad creation failed — return full response for debugging
+    return {
+      ...adRes,
+      creative_id: creativeId,
+      debug: { adset_id: String(adset_id), acct, creative_id: creativeId },
+    };
+  }
+
+  // ─── Create Ad from existing Creative ───────────────────────────────────
+  if (name === "create_ad_from_creative") {
+    const {
+      adset_id,
+      name: adName,
+      creative_id,
+      status = "PAUSED",
+    } = input as {
+      adset_id: string;
+      name: string;
+      creative_id: string;
+      status?: string;
+    };
+
+    const adRes = await postForm(`${BASE}/${acct}/ads`, {
+      name: adName,
+      adset_id: String(adset_id),
+      creative: JSON.stringify({ creative_id: String(creative_id) }),
+      status: String(status),
+      access_token: tok,
+    }) as Record<string, unknown>;
+
+    if (adRes.id) {
+      // Verify the ad exists
+      const verifyRes = await fetch(
+        `${BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`
+      );
+      const verified = safeParseJSON(await verifyRes.text()) as Record<string, unknown>;
+      return {
+        success: true,
+        ad_id: adRes.id,
+        creative_id,
+        status,
+        verified_ad_id: verified?.id,
+        verified_adset_id: verified?.adset_id,
+        verified_campaign_id: verified?.campaign_id,
+      };
+    }
+    return { ...adRes, debug: { adset_id: String(adset_id), creative_id, acct } };
   }
 
   // Audiences ──────────────────────────────────────────────────────────────
@@ -772,9 +875,12 @@ export async function POST(request: NextRequest) {
         while (iteration++ < 10) {
           const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+              "anthropic-version": "2023-06-01",
+            },
             body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 4096, system: SYSTEM_PROMPT, tools: TOOLS, messages: claudeMessages }),
-            // Note: no AbortSignal here — we let the request run to completion
           });
 
           if (!claudeRes.ok) {
@@ -800,23 +906,23 @@ export async function POST(request: NextRequest) {
               send({ type: "tool_call", tool: block.name, input: block.input, text: fmtCall(block.name, block.input) });
 
               // Send a keepalive ping so proxies/CDN don't close the connection during long ops
-            send({ type: "ping" });
+              send({ type: "ping" });
 
-            let resultText: string;
-            const toolTimeout = block.name === "upload_ad_image" ? 120_000 : 30_000;
-            try {
-              const result = await Promise.race([
-                executeTool(block.name, block.input, accessToken, adAccountId),
-                new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error(`Tool ${block.name} timed out after ${toolTimeout / 1000}s`)), toolTimeout)
-                ),
-              ]);
-              resultText = JSON.stringify(result);
-              send({ type: "tool_result", tool: block.name, text: fmtResult(block.name, result), data: result });
-            } catch (err) {
-              resultText = JSON.stringify({ error: String(err) });
-              send({ type: "error", text: "Tool error: " + String(err) });
-            }
+              let resultText: string;
+              const toolTimeout = block.name === "upload_ad_image" ? 120_000 : 30_000;
+              try {
+                const result = await Promise.race([
+                  executeTool(block.name, block.input, accessToken, adAccountId),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error(`Tool ${block.name} timed out after ${toolTimeout / 1000}s`)), toolTimeout)
+                  ),
+                ]);
+                resultText = JSON.stringify(result);
+                send({ type: "tool_result", tool: block.name, text: fmtResult(block.name, result), data: result });
+              } catch (err) {
+                resultText = JSON.stringify({ error: String(err) });
+                send({ type: "error", text: "Tool error: " + String(err) });
+              }
 
               toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultText });
             }
@@ -845,33 +951,36 @@ export async function POST(request: NextRequest) {
 function fmtCall(name: string, i: ToolInput): string {
   const $ = (cents: unknown) => `$${((cents as number) / 100).toFixed(2)}`;
   switch (name) {
-    case "list_campaigns":             return "Fetching all campaigns...";
-    case "get_campaign":               return `Fetching campaign ${i.campaign_id} details...`;
-    case "get_campaign_insights":      return `Fetching campaign performance (${i.date_preset})...`;
-    case "create_campaign":            return `Creating campaign "${i.name}" (${i.objective})...`;
-    case "update_campaign_budget":     return `Updating campaign ${i.campaign_id} budget → ${$(i.new_daily_budget_cents)}/day`;
-    case "remove_campaign_budget":     return `Removing campaign-level budget from campaign ${i.campaign_id}...`;
-    case "update_campaign_status":     return `Setting campaign ${i.campaign_id} → ${i.status}`;
-    case "update_campaign_objective":  return `Updating campaign ${i.campaign_id} objective → ${i.objective}`;
-    case "delete_campaign":            return `⚠️ Deleting campaign "${i.campaign_name}" permanently...`;
-    case "bulk_update_campaign_status":{
+    case "list_campaigns":              return "Fetching all campaigns...";
+    case "get_campaign":                return `Fetching campaign ${i.campaign_id} details...`;
+    case "get_campaign_insights":       return `Fetching campaign performance (${i.date_preset})...`;
+    case "create_campaign":             return `Creating campaign "${i.name}" (${i.objective})...`;
+    case "update_campaign_budget":      return `Updating campaign ${i.campaign_id} budget → ${$(i.new_daily_budget_cents)}/day`;
+    case "remove_campaign_budget":      return `Removing campaign-level budget from campaign ${i.campaign_id}...`;
+    case "update_campaign_status":      return `Setting campaign ${i.campaign_id} → ${i.status}`;
+    case "update_campaign_objective":   return `Updating campaign ${i.campaign_id} objective → ${i.objective}`;
+    case "delete_campaign":             return `⚠️ Deleting campaign "${i.campaign_name}" permanently...`;
+    case "bulk_update_campaign_status": {
       const ids = i.campaign_ids as string[];
       return `Bulk setting ${ids.length} campaign${ids.length !== 1 ? "s" : ""} → ${i.status}...`;
     }
-    case "list_adsets":                return `Fetching ad sets for campaign ${i.campaign_id}...`;
-    case "create_adset":               return `Creating ad set "${i.name}" in campaign ${i.campaign_id}...`;
-    case "update_adset_targeting":     return `Updating targeting for ad set ${i.adset_id}...`;
-    case "update_adset_budget":        return `Updating ad set ${i.adset_id} budget → ${$(i.new_daily_budget_cents)}/day`;
-    case "update_adset_status":        return `Setting ad set ${i.adset_id} → ${i.status}`;
-    case "get_adset_insights":         return `Fetching ad set performance (${i.date_preset})...`;
-    case "list_ads":                   return `Fetching ads in ad set ${i.adset_id}...`;
-    case "get_ad_insights":            return i.adset_id ? `Fetching ad performance in ad set ${i.adset_id} (${i.date_preset})...` : `Fetching ad performance in campaign ${i.campaign_id} (${i.date_preset})...`;
-    case "update_ad_status":           return `Setting ad ${i.ad_id} → ${i.status}`;
-    case "upload_ad_image":            return `Uploading image "${i.image_filename}" to ad library...`;
-    case "create_ad":                  return `Creating ad "${i.name}" in ad set ${i.adset_id}...`;
-    case "list_custom_audiences":      return "Fetching custom audiences...";
-    case "create_custom_audience":     return `Creating audience "${i.name}"...`;
-    case "create_lookalike_audience":  return `Creating lookalike "${i.name}" (${i.country}, ${((i.ratio as number) * 100).toFixed(0)}%)...`;
+    case "list_adsets":                 return `Fetching ad sets for campaign ${i.campaign_id}...`;
+    case "create_adset":                return `Creating ad set "${i.name}" in campaign ${i.campaign_id}...`;
+    case "update_adset_targeting":      return `Updating targeting for ad set ${i.adset_id}...`;
+    case "update_adset_budget":         return `Updating ad set ${i.adset_id} budget → ${$(i.new_daily_budget_cents)}/day`;
+    case "update_adset_status":         return `Setting ad set ${i.adset_id} → ${i.status}`;
+    case "get_adset_insights":          return `Fetching ad set performance (${i.date_preset})...`;
+    case "list_ads":                    return `Fetching ads in ad set ${i.adset_id}...`;
+    case "get_ad_insights":             return i.adset_id
+      ? `Fetching ad performance in ad set ${i.adset_id} (${i.date_preset})...`
+      : `Fetching ad performance in campaign ${i.campaign_id} (${i.date_preset})...`;
+    case "update_ad_status":            return `Setting ad ${i.ad_id} → ${i.status}`;
+    case "upload_ad_image":             return `Uploading image "${i.image_filename}" to ad library...`;
+    case "create_ad":                   return `Creating ${i.image_hash ? "image" : "text/link"} ad "${i.name}" in ad set ${i.adset_id}...`;
+    case "create_ad_from_creative":     return `Creating ad "${i.name}" from existing creative ${i.creative_id}...`;
+    case "list_custom_audiences":       return "Fetching custom audiences...";
+    case "create_custom_audience":      return `Creating audience "${i.name}"...`;
+    case "create_lookalike_audience":   return `Creating lookalike "${i.name}" (${i.country}, ${((i.ratio as number) * 100).toFixed(0)}%)...`;
     default: return `Calling ${name}...`;
   }
 }
@@ -882,18 +991,18 @@ function fmtResult(name: string, result: unknown): string {
   const count = (key = "data") => { const d = r?.[key] as unknown[]; return d?.length; };
   const ok = (msg: string) => r?.success ? `${msg} ✓` : `Response: ${JSON.stringify(r)}`;
   switch (name) {
-    case "list_campaigns":             return `Found ${count() ?? "?"} campaign${count() !== 1 ? "s" : ""}`;
-    case "get_campaign":               return r?.id ? `Campaign: ${r.name} (${r.status}, ${r.bid_strategy ?? "auto bid"})` : `Response: ${JSON.stringify(r)}`;
-    case "get_campaign_insights":      return `Insights for ${count() ?? "?"} campaign${count() !== 1 ? "s" : ""}`;
-    case "create_campaign":            return r?.id ? `Campaign created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
-    case "update_campaign_budget":     return ok("Budget updated");
-    case "remove_campaign_budget":     return r?.cbo_active ? "CBO active — ad sets don't need their own budget" : (r?.success ? "Campaign budget removed ✓" : `API note: ${r?.recommendation ?? r?.message ?? JSON.stringify(r)}`);
-    case "update_campaign_status":     return ok("Status updated");
-    case "update_campaign_objective":  return ok("Objective updated");
-    case "delete_campaign":            return ok("Campaign deleted");
-    case "bulk_update_campaign_status":return `Bulk update: ${r?.succeeded}/${r?.total} succeeded ✓`;
-    case "list_adsets":                return `Found ${count() ?? "?"} ad set${count() !== 1 ? "s" : ""}`;
-    case "create_adset":               {
+    case "list_campaigns":              return `Found ${count() ?? "?"} campaign${count() !== 1 ? "s" : ""}`;
+    case "get_campaign":                return r?.id ? `Campaign: ${r.name} (${r.status}, ${r.bid_strategy ?? "auto bid"})` : `Response: ${JSON.stringify(r)}`;
+    case "get_campaign_insights":       return `Insights for ${count() ?? "?"} campaign${count() !== 1 ? "s" : ""}`;
+    case "create_campaign":             return r?.id ? `Campaign created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
+    case "update_campaign_budget":      return ok("Budget updated");
+    case "remove_campaign_budget":      return r?.cbo_active ? "CBO active — ad sets don't need their own budget" : (r?.success ? "Campaign budget removed ✓" : `API note: ${r?.recommendation ?? r?.message ?? JSON.stringify(r)}`);
+    case "update_campaign_status":      return ok("Status updated");
+    case "update_campaign_objective":   return ok("Objective updated");
+    case "delete_campaign":             return ok("Campaign deleted");
+    case "bulk_update_campaign_status": return `Bulk update: ${r?.succeeded}/${r?.total} succeeded ✓`;
+    case "list_adsets":                 return `Found ${count() ?? "?"} ad set${count() !== 1 ? "s" : ""}`;
+    case "create_adset": {
       if (r?.id) {
         const note = r?.auto_fixed ? " (CBO — campaign budget applies)" : "";
         return `Ad set created ✓ (ID: ${r.id})${note}`;
@@ -902,18 +1011,34 @@ function fmtResult(name: string, result: unknown): string {
       if (r?.needs_budget) return "Needs daily_budget_cents — ask user for amount";
       return `Response: ${JSON.stringify(r)}`;
     }
-    case "update_adset_targeting":     return ok("Targeting updated");
-    case "update_adset_budget":        return ok("Ad set budget updated");
-    case "update_adset_status":        return ok("Ad set status updated");
-    case "get_adset_insights":         return `Insights for ${count() ?? "?"} ad set${count() !== 1 ? "s" : ""}`;
-    case "list_ads":                   return `Found ${count() ?? "?"} ad${count() !== 1 ? "s" : ""}`;
-    case "get_ad_insights":            { const d = r?.data as unknown[]; return d ? `Ad insights for ${d.length} ad${d.length !== 1 ? "s" : ""} (with names)` : "Ad insights loaded"; }
-    case "update_ad_status":           return ok("Ad status updated");
-    case "upload_ad_image":            return r?.image_hash ? `Image uploaded ✓ (hash: ${String(r.image_hash).slice(0, 12)}...)` : `Response: ${JSON.stringify(r)}`;
-    case "create_ad":                  return r?.ad_id ? `Ad created ✓ (ID: ${r.ad_id}, status: PAUSED)` : `Response: ${JSON.stringify(r)}`;
-    case "list_custom_audiences":      return `Found ${count() ?? "?"} audience${count() !== 1 ? "s" : ""}`;
-    case "create_custom_audience":     return r?.id ? `Audience created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
-    case "create_lookalike_audience":  return r?.id ? `Lookalike created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
+    case "update_adset_targeting":      return ok("Targeting updated");
+    case "update_adset_budget":         return ok("Ad set budget updated");
+    case "update_adset_status":         return ok("Ad set status updated");
+    case "get_adset_insights":          return `Insights for ${count() ?? "?"} ad set${count() !== 1 ? "s" : ""}`;
+    case "list_ads":                    return `Found ${count() ?? "?"} ad${count() !== 1 ? "s" : ""}`;
+    case "get_ad_insights": {
+      const d = r?.data as unknown[];
+      return d ? `Ad insights for ${d.length} ad${d.length !== 1 ? "s" : ""} (with names)` : "Ad insights loaded";
+    }
+    case "update_ad_status":            return ok("Ad status updated");
+    case "upload_ad_image":             return r?.image_hash ? `Image uploaded ✓ (hash: ${String(r.image_hash).slice(0, 12)}...)` : `Response: ${JSON.stringify(r)}`;
+    case "create_ad": {
+      if (r?.ad_id) {
+        const adType = r?.ad_type === "image" ? "Image ad" : "Text/link ad";
+        const verified = r?.verified_ad_id ? ` — verified in account ✓` : (r?.verify_error ? ` — WARNING: verify failed: ${r.verify_error}` : "");
+        return `${adType} created (ID: ${r.ad_id}, adset: ${r.verified_adset_id ?? "?"}, campaign: ${r.verified_campaign_id ?? "?"}, status: ${r.verified_status ?? "PAUSED"})${verified}`;
+      }
+      return `Failed: ${JSON.stringify(r)}`;
+    }
+    case "create_ad_from_creative": {
+      if (r?.ad_id) {
+        return `Ad created ✓ (ID: ${r.ad_id}, adset: ${r.verified_adset_id ?? "?"}, campaign: ${r.verified_campaign_id ?? "?"})`;
+      }
+      return `Failed: ${JSON.stringify(r)}`;
+    }
+    case "list_custom_audiences":       return `Found ${count() ?? "?"} audience${count() !== 1 ? "s" : ""}`;
+    case "create_custom_audience":      return r?.id ? `Audience created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
+    case "create_lookalike_audience":   return r?.id ? `Lookalike created ✓ (ID: ${r.id})` : `Response: ${JSON.stringify(r)}`;
     default: return "Done";
   }
 }

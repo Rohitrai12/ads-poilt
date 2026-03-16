@@ -1,3 +1,4 @@
+// app/api/auth/signup/route.ts
 import { NextRequest, NextResponse } from "next/server"
 
 import { createUser, signAuthToken } from "@/lib/auth"
@@ -62,4 +63,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }
-
