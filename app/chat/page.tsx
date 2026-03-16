@@ -869,7 +869,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
 
   function isAuthError(text: string): boolean {
     try {
-      const jsonMatch = text.match(/Error:\s*(\{.*\})/s);
+      const jsonMatch = text.match(/Error:\s*(\{[\s\S]*?\})/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[1]);
         if (parsed.code === 190) return true;
