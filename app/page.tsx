@@ -12,6 +12,13 @@ export default function Home() {
   const [openFaq, setOpenFaq] = useState<number | null>(null)
   const chartRef = useRef<SVGSVGElement>(null)
 
+   useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://api.leadconnectorhq.com/js/form_embed.js";
+    script.async = true;
+    document.body.appendChild(script);
+  }, []); 
+
   /* ── nav scroll ── */
   useEffect(() => {
     const fn = () => setScrolled(window.scrollY > 40)
@@ -464,6 +471,12 @@ export default function Home() {
         </div>
       </section>
 
+ <iframe
+        src="https://api.leadconnectorhq.com/widget/booking/imHBwrekjl9SvyG9tV52"
+        style={{ width: "100%", border: "none", overflow: "hidden" }}
+        scrolling="no"
+        id="imHBwrekjl9SvyG9tV52_1773827461376"
+      />
       {/* FAQ */}
       <section className="faq">
         <div className="section-inner" style={{ maxWidth: '900px' }}>

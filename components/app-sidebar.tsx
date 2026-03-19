@@ -68,7 +68,7 @@ const data = {
     },
     {
       title: "Team",
-      url: "#",
+      url: "/dashboard/teams",
       icon: IconUsers,
     },
   ],
@@ -166,7 +166,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               asChild
               className="data-[slot=sidebar-menu-button]:p-1.5!"
             >
-              <a href="#" style={{height:"54px;"}}>
+              <a href="#" style={{ height: "54px" }}>
                 <Image src={"/logo.png"} alt="logo" width={50} height={50} style={{borderRadius:"50%"}}></Image>
                 <span className="text-base font-semibold">Ads Poilt.</span>
               </a>

@@ -55,6 +55,29 @@ type AdAccount = {
   timezone_name: string;
 };
 
+// ─── Facebook OAuth config ────────────────────────────────────────────────────
+const FB_APP_ID = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID ?? "";
+const FB_OAUTH_SCOPES = "ads_management,ads_read,business_management";
+const FB_API_VERSION = "v25.0";
+
+// Build the Facebook OAuth redirect URL.
+// After the user grants permissions, Facebook redirects to /api/auth/facebook/callback
+// which exchanges the code for an access token and redirects back to the app.
+function getFbOAuthUrl(): string {
+  if (typeof window === "undefined") return "";
+  const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
+  const state = Math.random().toString(36).slice(2); // CSRF token
+  if (typeof window !== "undefined") sessionStorage.setItem("fb_oauth_state", state);
+  return (
+    `https://www.facebook.com/dialog/oauth` +
+    `?client_id=${FB_APP_ID}` +
+    `&redirect_uri=${redirectUri}` +
+    `&scope=${encodeURIComponent(FB_OAUTH_SCOPES)}` +
+    `&state=${state}` +
+    `&response_type=code`
+  );
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const uid = () => Math.random().toString(36).slice(2);
@@ -553,16 +576,135 @@ function FacebookIcon({ size = 20, color = "currentColor" }: { size?: number; co
   );
 }
 
+// ─── Facebook OAuth helpers ───────────────────────────────────────────────────
+
+/**
+ * Redirect-based Facebook OAuth (works in dev mode / before app review).
+ * Navigates full-page to Facebook's dialog; Facebook redirects back to
+ * /api/auth/facebook/callback which exchanges the code for a token, then
+ * redirects to /?fb_token=<token> so we can pick it up from the URL.
+ */
+function redirectToFacebookLogin() {
+  if (typeof window === "undefined" || !FB_APP_ID) return;
+  const state = Math.random().toString(36).slice(2);
+  sessionStorage.setItem("fb_oauth_state", state);
+  const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
+  const url =
+    `https://www.facebook.com/dialog/oauth` +
+    `?client_id=${FB_APP_ID}` +
+    `&redirect_uri=${redirectUri}` +
+    `&scope=${encodeURIComponent(FB_OAUTH_SCOPES)}` +
+    `&state=${state}` +
+    `&response_type=code`;
+  window.location.href = url;
+}
+
+async function fetchAdAccountsForUser(accessToken: string): Promise<AdAccount[]> {
+  const fields = "id,name,account_status,currency,timezone_name";
+  const res = await fetch(
+    `https://graph.facebook.com/${FB_API_VERSION}/me/adaccounts?fields=${fields}&access_token=${encodeURIComponent(accessToken)}`
+  );
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message ?? "Could not fetch ad accounts.");
+  return (data.data ?? []) as AdAccount[];
+}
+
+// ─── Ad Account Picker Modal ──────────────────────────────────────────────────
+
+function AdAccountPicker({
+  accounts,
+  onSelect,
+  onCancel,
+}: {
+  accounts: AdAccount[];
+  onSelect: (account: AdAccount) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      style={{ animation: "fadeSlideIn 0.15s ease-out" }}>
+      <div className="w-full max-w-sm rounded-2xl border border-border/60 bg-background shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border/40 px-5 py-4">
+          <div>
+            <h3 className="text-sm font-semibold">Select Ad Account</h3>
+            <p className="text-[11px] text-muted-foreground">Choose which account to manage</p>
+          </div>
+          <button onClick={onCancel}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="max-h-72 overflow-y-auto py-2">
+          {accounts.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-muted-foreground">
+              No ad accounts found for this Facebook account.
+            </div>
+          ) : (
+            accounts.map((acct) => {
+              const isActive = acct.account_status === 1;
+              const numericId = acct.id.replace(/^act_/, "");
+              return (
+                <button
+                  key={acct.id}
+                  onClick={() => onSelect(acct)}
+                  disabled={!isActive}
+                  className="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold
+                    ${isActive ? "bg-[#aaf345]/20 text-[#6db52b]" : "bg-muted text-muted-foreground"}`}>
+                    {acct.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-medium text-foreground">{acct.name}</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      act_{numericId} · {acct.currency}
+                      {!isActive && <span className="ml-1.5 text-amber-500">Inactive</span>}
+                    </div>
+                  </div>
+                  {isActive && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground">
+                      <path d="M5 12h14M12 5l7 7-7 7" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+        <div className="border-t border-border/40 px-5 py-3">
+          <button onClick={onCancel} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Connect screen ───────────────────────────────────────────────────────────
 
 function ConnectScreen({ onConnect }: {
   onConnect: (accessToken: string, adAccountId: string) => void;
 }) {
+  const [mode, setMode] = useState<"choose" | "manual">("choose");
   const [token, setToken] = useState("");
   const [adAccountId, setAdAccountId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // ── Facebook OAuth button ──────────────────────────────────────────────────
+  const handleFbLogin = () => {
+    if (!FB_APP_ID) {
+      setError("NEXT_PUBLIC_FACEBOOK_APP_ID is not configured. Please add it to .env.local and restart the server.");
+      return;
+    }
+    setError("");
+    redirectToFacebookLogin();
+  };
+
+  // ── Manual token submit ───────────────────────────────────────────────────
   const handleSubmit = async () => {
     const cleanToken = token.trim();
     const cleanAcct = adAccountId.trim().replace(/^act_/i, "");
@@ -573,7 +715,7 @@ function ConnectScreen({ onConnect }: {
     setLoading(true);
     try {
       const res = await fetch(
-        `https://graph.facebook.com/v25.0/act_${cleanAcct}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(cleanToken)}`
+        `https://graph.facebook.com/${FB_API_VERSION}/act_${cleanAcct}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(cleanToken)}`
       );
       const data = await res.json();
       if (data.error) {
@@ -589,95 +731,160 @@ function ConnectScreen({ onConnect }: {
   };
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_50px_rgba(170,243,69,0.25)]">
-        <FacebookIcon size={28} color="white" />
-      </div>
-
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">Connect Meta Ads</h2>
-        <p className="mt-1.5 max-w-xs text-sm text-muted-foreground">Enter your credentials to start managing campaigns with AI.</p>
-      </div>
-
-      <Card className="w-full max-w-sm border-border/60">
-        <CardContent className="space-y-4 pt-5">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-foreground">Access Token</label>
-            <Input
-              type="password"
-              placeholder="EAAxxxxxxxxxxxxxxxx…"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              className="font-mono text-xs"
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Get it from{" "}
-              <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer"
-                className="text-[#aaf345] underline-offset-2 hover:underline">
-                Graph API Explorer
-              </a>
-              {" "}with <code className="rounded bg-muted px-1 text-[10px]">ads_management</code> + <code className="rounded bg-muted px-1 text-[10px]">ads_read</code> scopes.
-            </p>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-foreground">Ad Account ID</label>
-            <div className="relative flex items-center">
-              <span className="absolute left-3 select-none font-mono text-xs text-muted-foreground">act_</span>
-              <Input
-                placeholder="123456789"
-                value={adAccountId.replace(/^act_/i, "")}
-                onChange={(e) => setAdAccountId(e.target.value.replace(/^act_/i, ""))}
-                className="pl-10 font-mono text-xs"
-                autoComplete="off"
-                inputMode="numeric"
-              />
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Found in Meta Ads Manager → Account Settings, or in the URL as <code className="rounded bg-muted px-1 text-[10px]">act_XXXXXXX</code>.
-            </p>
-          </div>
-
-          {error && (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {error}
-            </div>
-          )}
-
-          <Button
-            className="w-full gap-2 bg-[#aaf345] text-black hover:bg-[#96da2e] disabled:opacity-40"
-            onClick={handleSubmit}
-            disabled={loading || !token.trim() || !adAccountId.trim()}
-          >
-            {loading ? (
-              <>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                Verifying…
-              </>
-            ) : (
-              <>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
-                Connect
-              </>
-            )}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <details className="w-full max-w-sm">
-        <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
-          How to get a long-lived token ▸
-        </summary>
-        <div className="mt-2 space-y-1.5 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-          <p>1. Open <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Graph API Explorer</a>.</p>
-          <p>2. Select your App → Generate Access Token → check <code className="rounded bg-muted px-1">ads_management</code> and <code className="rounded bg-muted px-1">ads_read</code>.</p>
-          <p>3. Copy the token above. Short-lived tokens expire in 1 hour; exchange via <code className="rounded bg-muted px-1">/oauth/access_token?grant_type=fb_exchange_token</code> for a 60-day token.</p>
+    <>
+      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_50px_rgba(170,243,69,0.25)]">
+          <FacebookIcon size={28} color="white" />
         </div>
-      </details>
-    </div>
+
+        <div className="text-center">
+          <h2 className="text-xl font-semibold">Connect Meta Ads</h2>
+          <p className="mt-1.5 max-w-xs text-sm text-muted-foreground">
+            Sign in with Facebook or paste your credentials to start managing campaigns with AI.
+          </p>
+        </div>
+
+        {mode === "choose" && (
+          <div className="flex w-full max-w-sm flex-col gap-3">
+            {/* ── Facebook OAuth button ── */}
+            <button
+              onClick={handleFbLogin}
+              className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl border border-[#1877f2]/40 bg-[#1877f2] px-4 py-3.5 text-sm font-semibold text-white shadow-[0_2px_12px_rgba(24,119,242,0.35)] transition-all hover:bg-[#166fe5] hover:shadow-[0_4px_20px_rgba(24,119,242,0.45)]"
+            >
+              <FacebookIcon size={18} color="white" />
+              Continue with Facebook
+              {/* Shine effect */}
+              <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-500 group-hover:translate-x-full" />
+            </button>
+
+            <div className="flex items-center gap-3 py-1">
+              <div className="h-px flex-1 bg-border/50" />
+              <span className="text-[11px] text-muted-foreground">or use a token manually</span>
+              <div className="h-px flex-1 bg-border/50" />
+            </div>
+
+            <button
+              onClick={() => setMode("manual")}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+              Enter access token manually
+            </button>
+
+            {error && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {error}
+              </div>
+            )}
+
+            <details className="pt-1">
+              <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                Why Facebook login? ▸
+              </summary>
+              <div className="mt-2 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+                <p>Signing in with Facebook uses OAuth 2.0 — no password is shared with this app. Your ad accounts are fetched automatically, and you can revoke access any time from your <a href="https://www.facebook.com/settings?tab=applications" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Facebook App Settings</a>.</p>
+              </div>
+            </details>
+          </div>
+        )}
+
+        {mode === "manual" && (
+          <>
+            <Card className="w-full max-w-sm border-border/60">
+              <CardContent className="space-y-4 pt-5">
+                <button
+                  onClick={() => { setMode("choose"); setError(""); }}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M19 12H5M12 5l-7 7 7 7" />
+                  </svg>
+                  Back
+                </button>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-foreground">Access Token</label>
+                  <Input
+                    type="password"
+                    placeholder="EAAxxxxxxxxxxxxxxxx…"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    className="font-mono text-xs"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Get it from{" "}
+                    <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer"
+                      className="text-[#aaf345] underline-offset-2 hover:underline">
+                      Graph API Explorer
+                    </a>
+                    {" "}with <code className="rounded bg-muted px-1 text-[10px]">ads_management</code> + <code className="rounded bg-muted px-1 text-[10px]">ads_read</code> scopes.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-foreground">Ad Account ID</label>
+                  <div className="relative flex items-center">
+                    <span className="absolute left-3 select-none font-mono text-xs text-muted-foreground">act_</span>
+                    <Input
+                      placeholder="123456789"
+                      value={adAccountId.replace(/^act_/i, "")}
+                      onChange={(e) => setAdAccountId(e.target.value.replace(/^act_/i, ""))}
+                      className="pl-10 font-mono text-xs"
+                      autoComplete="off"
+                      inputMode="numeric"
+                    />
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Found in Meta Ads Manager → Account Settings, or in the URL as <code className="rounded bg-muted px-1 text-[10px]">act_XXXXXXX</code>.
+                  </p>
+                </div>
+
+                {error && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {error}
+                  </div>
+                )}
+
+                <Button
+                  className="w-full gap-2 bg-[#aaf345] text-black hover:bg-[#96da2e] disabled:opacity-40"
+                  onClick={handleSubmit}
+                  disabled={loading || !token.trim() || !adAccountId.trim()}
+                >
+                  {loading ? (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                      Verifying…
+                    </>
+                  ) : (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+                      Connect
+                    </>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+
+            <details className="w-full max-w-sm">
+              <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                How to get a long-lived token ▸
+              </summary>
+              <div className="mt-2 space-y-1.5 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+                <p>1. Open <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Graph API Explorer</a>.</p>
+                <p>2. Select your App → Generate Access Token → check <code className="rounded bg-muted px-1">ads_management</code> and <code className="rounded bg-muted px-1">ads_read</code>.</p>
+                <p>3. Copy the token above. Short-lived tokens expire in 1 hour; exchange via <code className="rounded bg-muted px-1">/oauth/access_token?grant_type=fb_exchange_token</code> for a 60-day token.</p>
+              </div>
+            </details>
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -688,6 +895,7 @@ function TokenRefreshBanner({
   token,
   onTokenChange,
   onSubmit,
+  onFbRefresh,
   onDismiss,
   loading,
   error,
@@ -696,6 +904,7 @@ function TokenRefreshBanner({
   token: string;
   onTokenChange: (v: string) => void;
   onSubmit: () => void;
+  onFbRefresh: () => void;
   onDismiss: () => void;
   loading: boolean;
   error: string;
@@ -720,18 +929,30 @@ function TokenRefreshBanner({
           <div className="min-w-0">
             <p className="text-xs font-semibold text-amber-400">Access token expired</p>
             <p className="text-[11px] text-amber-300/70">
-              Your token for <span className="font-medium text-amber-300">{accountName}</span> has expired. Paste a fresh token to continue — your chat history is preserved.
+              Your token for <span className="font-medium text-amber-300">{accountName}</span> has expired. Refresh to continue — your chat history is preserved.
             </p>
           </div>
         </div>
 
-        {/* Input + buttons */}
+        {/* Buttons */}
         <div className="flex shrink-0 flex-col gap-1.5 sm:w-72">
+          {/* Facebook re-login button */}
+          {FB_APP_ID && (
+            <button
+              onClick={onFbRefresh}
+              disabled={loading}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-[#1877f2] px-3 py-2 text-[11px] font-semibold text-white transition-colors hover:bg-[#166fe5] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <FacebookIcon size={11} color="white" />
+              Re-connect with Facebook
+            </button>
+          )}
+
           <div className="flex gap-1.5">
             <Input
               ref={ref}
               type="password"
-              placeholder="Paste new access token…"
+              placeholder="Or paste new access token…"
               value={token}
               onChange={(e) => onTokenChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
@@ -752,7 +973,7 @@ function TokenRefreshBanner({
                   <path d="M5 12h14M12 5l7 7-7 7" />
                 </svg>
               )}
-              Refresh
+              Paste
             </button>
             <button
               onClick={onDismiss}
@@ -765,13 +986,6 @@ function TokenRefreshBanner({
             </button>
           </div>
           {error && <p className="text-[10px] text-red-400">{error}</p>}
-          <p className="text-[10px] text-amber-700">
-            Get a fresh token from{" "}
-            <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer"
-              className="underline underline-offset-2 hover:text-amber-500">
-              Graph API Explorer
-            </a>
-          </p>
         </div>
       </div>
     </div>
@@ -797,6 +1011,11 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
 
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Multi-account OAuth picker (shown after redirect callback) ────────────
+  const [oauthToken, setOauthToken] = useState("");
+  const [oauthAccounts, setOauthAccounts] = useState<AdAccount[]>([]);
+  const [showOauthPicker, setShowOauthPicker] = useState(false);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -832,12 +1051,54 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     } catch { /* ignore */ }
   }, []);
 
+  // ── Pick up OAuth token from URL after Facebook redirect callback ──────────
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const fbToken = params.get("fb_token");
+    const fbError = params.get("fb_error");
+
+    if (fbError) {
+      // Clean the URL and let the user see the connect screen with an error
+      window.history.replaceState({}, "", window.location.pathname);
+      return;
+    }
+
+    if (!fbToken) return;
+
+    // Clean the token from the URL immediately
+    window.history.replaceState({}, "", window.location.pathname);
+
+    // Fetch ad accounts, then auto-connect (single account) or show picker
+    (async () => {
+      try {
+        const accounts = await fetchAdAccountsForUser(fbToken);
+        if (accounts.length === 0) return;
+        // Auto-connect to the first (or only) account
+        const acct = accounts[0];
+        const numericId = acct.id.replace(/^act_/, "");
+        setAccessToken(fbToken);
+        setAdAccountId(numericId);
+        setSelectedAccount(acct);
+        setPhase("chat");
+        window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: fbToken, adAccountId: numericId, selectedAccount: acct }));
+        if (accounts.length > 1) {
+          // Multiple accounts — show the picker
+          setOauthAccounts(accounts);
+          setOauthToken(fbToken);
+          setShowOauthPicker(true);
+        }
+      } catch { /* ignore — user can connect manually */ }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const handleManualConnect = useCallback(async (token: string, acctId: string) => {
     try {
       const res = await fetch(
-        `https://graph.facebook.com/v25.0/act_${acctId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(token)}`
+        `https://graph.facebook.com/${FB_API_VERSION}/act_${acctId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(token)}`
       );
       const data = await res.json();
       const acct: AdAccount = {
@@ -888,7 +1149,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     setRefreshError("");
     try {
       const res = await fetch(
-        `https://graph.facebook.com/v25.0/act_${adAccountId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(newToken)}`
+        `https://graph.facebook.com/${FB_API_VERSION}/act_${adAccountId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(newToken)}`
       );
       const data = await res.json();
       if (data.error) {
@@ -918,6 +1179,13 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
       setRefreshLoading(false);
     }
   }, [refreshToken, adAccountId, selectedAccount]);
+
+  // ── Facebook re-login for token refresh ───────────────────────────────────
+
+  const handleFbRefresh = useCallback(() => {
+    // Re-run the full OAuth redirect flow — the callback will update the token
+    redirectToFacebookLogin();
+  }, []);
 
   // ── Image attachment ──────────────────────────────────────────────────────
 
@@ -1076,7 +1344,6 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           try {
             const step: Step = JSON.parse(line);
             if (step.type === "done") continue;
-            // Detect expired token (Meta error code 190)
             if (step.type === "tool_result" && isAuthError(step.text)) {
               setAuthExpired(true);
             }
@@ -1127,9 +1394,26 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
 
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !loading && !authExpired;
 
+  const handleOauthAccountPick = useCallback((acct: AdAccount) => {
+    const numericId = acct.id.replace(/^act_/, "");
+    setAccessToken(oauthToken);
+    setAdAccountId(numericId);
+    setSelectedAccount(acct);
+    setPhase("chat");
+    setShowOauthPicker(false);
+    window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: oauthToken, adAccountId: numericId, selectedAccount: acct }));
+  }, [oauthToken]);
+
   return (
     <>
       <style>{ANIMATION_STYLES}</style>
+      {showOauthPicker && (
+        <AdAccountPicker
+          accounts={oauthAccounts}
+          onSelect={handleOauthAccountPick}
+          onCancel={() => setShowOauthPicker(false)}
+        />
+      )}
       <div className={"flex min-h-0 flex-col bg-background text-foreground " + (embedded ? "flex-1" : "h-[100svh]")}>
 
         {/* Top header */}
@@ -1168,6 +1452,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
             token={refreshToken}
             onTokenChange={setRefreshToken}
             onSubmit={handleTokenRefresh}
+            onFbRefresh={handleFbRefresh}
             onDismiss={() => { setAuthExpired(false); setRefreshError(""); }}
             loading={refreshLoading}
             error={refreshError}

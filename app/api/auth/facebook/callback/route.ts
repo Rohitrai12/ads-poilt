@@ -1,74 +1,80 @@
+// app/api/auth/facebook/callback/route.ts
+// (or pages/api/auth/facebook/callback.ts for Pages Router)
+//
+// This route receives the OAuth `code` from Facebook, exchanges it for an
+// access token, then redirects back to the app with the token in the URL.
+//
+// Required env vars (.env.local):
+//   NEXT_PUBLIC_FACEBOOK_APP_ID=<your app id>
+//   FACEBOOK_APP_SECRET=<your app secret>   ← server-only, never exposed to client
+
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const META_VERSION = "v25.0";
+const FB_API_VERSION = "v25.0";
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
+
   const code = searchParams.get("code");
   const error = searchParams.get("error");
+  const errorDescription = searchParams.get("error_description");
 
+  // User denied the permission dialog
   if (error || !code) {
-    return NextResponse.redirect(`${origin}/dashboard/chat?fb_error=${error ?? "cancelled"}`);
+    const reason = errorDescription ?? error ?? "access_denied";
+    return NextResponse.redirect(`${origin}/?fb_error=${encodeURIComponent(reason)}`);
   }
 
-  const appId = process.env.FACEBOOK_APP_ID;
+  const appId = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID;
   const appSecret = process.env.FACEBOOK_APP_SECRET;
-  const redirectUri = `${origin}/api/auth/facebook/callback`;
 
   if (!appId || !appSecret) {
-    return NextResponse.redirect(`${origin}/dashboard/chat?fb_error=missing_env`);
+    return NextResponse.redirect(
+      `${origin}/?fb_error=${encodeURIComponent("Server misconfiguration: FACEBOOK_APP_SECRET not set.")}`
+    );
   }
 
-  // Exchange code for short-lived token
-  const tokenRes = await fetch(
-    `https://graph.facebook.com/${META_VERSION}/oauth/access_token?` +
-      new URLSearchParams({ client_id: appId, client_secret: appSecret, redirect_uri: redirectUri, code })
-  );
-  const tokenData = await tokenRes.json();
+  const redirectUri = `${origin}/api/auth/facebook/callback`;
 
-  if (tokenData.error || !tokenData.access_token) {
-    const msg = tokenData.error?.message ?? "token_exchange_failed";
-    return NextResponse.redirect(`${origin}/dashboard/chat?fb_error=${encodeURIComponent(msg)}`);
+  try {
+    // Exchange the code for a short-lived user access token
+    const tokenRes = await fetch(
+      `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token` +
+        `?client_id=${appId}` +
+        `&client_secret=${appSecret}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&code=${encodeURIComponent(code)}`
+    );
+
+    const tokenData = await tokenRes.json();
+
+    if (tokenData.error || !tokenData.access_token) {
+      const msg = tokenData.error?.message ?? "Token exchange failed";
+      return NextResponse.redirect(`${origin}/?fb_error=${encodeURIComponent(msg)}`);
+    }
+
+    const shortLivedToken: string = tokenData.access_token;
+
+    // Exchange for a long-lived token (valid ~60 days)
+    const longLivedRes = await fetch(
+      `https://graph.facebook.com/${FB_API_VERSION}/oauth/access_token` +
+        `?grant_type=fb_exchange_token` +
+        `&client_id=${appId}` +
+        `&client_secret=${appSecret}` +
+        `&fb_exchange_token=${encodeURIComponent(shortLivedToken)}`
+    );
+
+    const longLivedData = await longLivedRes.json();
+
+    // If long-lived exchange fails, fall back to short-lived token
+    const finalToken: string = longLivedData.access_token ?? shortLivedToken;
+
+    // Redirect back to the app — the client-side code will pick up fb_token from the URL
+    return NextResponse.redirect(`${origin}/?fb_token=${encodeURIComponent(finalToken)}`);
+  } catch (err) {
+    return NextResponse.redirect(
+      `${origin}/?fb_error=${encodeURIComponent(String(err))}`
+    );
   }
-
-  const shortToken = tokenData.access_token;
-
-  // Exchange for long-lived token (60 days)
-  const longRes = await fetch(
-    `https://graph.facebook.com/${META_VERSION}/oauth/access_token?` +
-      new URLSearchParams({
-        grant_type: "fb_exchange_token",
-        client_id: appId,
-        client_secret: appSecret,
-        fb_exchange_token: shortToken,
-      })
-  );
-  const longData = await longRes.json();
-  const accessToken = longData.access_token ?? shortToken;
-
-  // Fetch ad accounts the user has access to
-  const acctRes = await fetch(
-    `https://graph.facebook.com/${META_VERSION}/me/adaccounts?fields=id,name,account_status,currency,timezone_name&access_token=${accessToken}`
-  );
-  const acctData = await acctRes.json();
-  const accounts = acctData.data ?? [];
-
-  // Pass token + accounts back to the app via URL params
-  // and also persist in a cookie so we don't ask again next time.
-  const params = new URLSearchParams({
-    fb_token: accessToken,
-    fb_accounts: JSON.stringify(accounts),
-  });
-
-  const response = NextResponse.redirect(`${origin}/dashboard/chat?${params}`);
-  response.cookies.set("meta_ads_auth", JSON.stringify({ accessToken, accounts }), {
-    httpOnly: false,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 30, // 30 days
-  });
-
-  return response;
 }
