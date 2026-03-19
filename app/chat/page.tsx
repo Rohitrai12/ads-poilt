@@ -60,22 +60,19 @@ const FB_APP_ID = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID ?? "";
 const FB_OAUTH_SCOPES = "ads_management,ads_read,business_management";
 const FB_API_VERSION = "v25.0";
 
-// Build the Facebook OAuth redirect URL.
-// After the user grants permissions, Facebook redirects to /api/auth/facebook/callback
-// which exchanges the code for an access token and redirects back to the app.
-function getFbOAuthUrl(): string {
-  if (typeof window === "undefined") return "";
+function redirectToFacebookLogin() {
+  if (typeof window === "undefined" || !FB_APP_ID) return;
+  const state = Math.random().toString(36).slice(2);
+  sessionStorage.setItem("fb_oauth_state", state);
   const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
-  const state = Math.random().toString(36).slice(2); // CSRF token
-  if (typeof window !== "undefined") sessionStorage.setItem("fb_oauth_state", state);
-  return (
+  const url =
     `https://www.facebook.com/dialog/oauth` +
     `?client_id=${FB_APP_ID}` +
     `&redirect_uri=${redirectUri}` +
     `&scope=${encodeURIComponent(FB_OAUTH_SCOPES)}` +
     `&state=${state}` +
-    `&response_type=code`
-  );
+    `&response_type=code`;
+  window.location.href = url;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -127,7 +124,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
-// ─── localStorage helpers ─────────────────────────────────────────────────────
+// ─── localStorage / cookie helpers ───────────────────────────────────────────
 
 const LS_SESSIONS = "meta_ads_sessions";
 const LS_AUTH = "meta_ads_auth";
@@ -137,6 +134,15 @@ function loadSessions(): ChatSession[] {
 }
 function saveSessions(s: ChatSession[]) {
   try { localStorage.setItem(LS_SESSIONS, JSON.stringify(s)); } catch { /* quota */ }
+}
+
+/** Read the meta_ads_auth cookie set by the callback route */
+function readAuthCookie(): { accessToken: string; accounts: AdAccount[] } | null {
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)meta_ads_auth=([^;]+)/);
+    if (!match) return null;
+    return JSON.parse(decodeURIComponent(match[1]));
+  } catch { return null; }
 }
 
 // ─── Tool icons ───────────────────────────────────────────────────────────────
@@ -576,39 +582,6 @@ function FacebookIcon({ size = 20, color = "currentColor" }: { size?: number; co
   );
 }
 
-// ─── Facebook OAuth helpers ───────────────────────────────────────────────────
-
-/**
- * Redirect-based Facebook OAuth (works in dev mode / before app review).
- * Navigates full-page to Facebook's dialog; Facebook redirects back to
- * /api/auth/facebook/callback which exchanges the code for a token, then
- * redirects to /?fb_token=<token> so we can pick it up from the URL.
- */
-function redirectToFacebookLogin() {
-  if (typeof window === "undefined" || !FB_APP_ID) return;
-  const state = Math.random().toString(36).slice(2);
-  sessionStorage.setItem("fb_oauth_state", state);
-  const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
-  const url =
-    `https://www.facebook.com/dialog/oauth` +
-    `?client_id=${FB_APP_ID}` +
-    `&redirect_uri=${redirectUri}` +
-    `&scope=${encodeURIComponent(FB_OAUTH_SCOPES)}` +
-    `&state=${state}` +
-    `&response_type=code`;
-  window.location.href = url;
-}
-
-async function fetchAdAccountsForUser(accessToken: string): Promise<AdAccount[]> {
-  const fields = "id,name,account_status,currency,timezone_name";
-  const res = await fetch(
-    `https://graph.facebook.com/${FB_API_VERSION}/me/adaccounts?fields=${fields}&access_token=${encodeURIComponent(accessToken)}`
-  );
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message ?? "Could not fetch ad accounts.");
-  return (data.data ?? []) as AdAccount[];
-}
-
 // ─── Ad Account Picker Modal ──────────────────────────────────────────────────
 
 function AdAccountPicker({
@@ -686,7 +659,7 @@ function AdAccountPicker({
 // ─── Connect screen ───────────────────────────────────────────────────────────
 
 function ConnectScreen({ onConnect }: {
-  onConnect: (accessToken: string, adAccountId: string) => void;
+  onConnect: (accessToken: string, adAccountId: string, accountMeta?: AdAccount) => void;
 }) {
   const [mode, setMode] = useState<"choose" | "manual">("choose");
   const [token, setToken] = useState("");
@@ -694,17 +667,15 @@ function ConnectScreen({ onConnect }: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // ── Facebook OAuth button ──────────────────────────────────────────────────
   const handleFbLogin = () => {
     if (!FB_APP_ID) {
-      setError("NEXT_PUBLIC_FACEBOOK_APP_ID is not configured. Please add it to .env.local and restart the server.");
+      setError("NEXT_PUBLIC_FACEBOOK_APP_ID is not set. Add it to .env.local and restart.");
       return;
     }
     setError("");
     redirectToFacebookLogin();
   };
 
-  // ── Manual token submit ───────────────────────────────────────────────────
   const handleSubmit = async () => {
     const cleanToken = token.trim();
     const cleanAcct = adAccountId.trim().replace(/^act_/i, "");
@@ -718,12 +689,8 @@ function ConnectScreen({ onConnect }: {
         `https://graph.facebook.com/${FB_API_VERSION}/act_${cleanAcct}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(cleanToken)}`
       );
       const data = await res.json();
-      if (data.error) {
-        setError(data.error.message ?? "Invalid token or account ID.");
-        setLoading(false);
-        return;
-      }
-      onConnect(cleanToken, cleanAcct);
+      if (data.error) { setError(data.error.message ?? "Invalid token or account ID."); setLoading(false); return; }
+      onConnect(cleanToken, cleanAcct, data as AdAccount);
     } catch {
       setError("Network error — could not reach Meta API.");
       setLoading(false);
@@ -731,194 +698,160 @@ function ConnectScreen({ onConnect }: {
   };
 
   return (
-    <>
-      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_50px_rgba(170,243,69,0.25)]">
-          <FacebookIcon size={28} color="white" />
-        </div>
-
-        <div className="text-center">
-          <h2 className="text-xl font-semibold">Connect Meta Ads</h2>
-          <p className="mt-1.5 max-w-xs text-sm text-muted-foreground">
-            Sign in with Facebook or paste your credentials to start managing campaigns with AI.
-          </p>
-        </div>
-
-        {mode === "choose" && (
-          <div className="flex w-full max-w-sm flex-col gap-3">
-            {/* ── Facebook OAuth button ── */}
-            <button
-              onClick={handleFbLogin}
-              className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl border border-[#1877f2]/40 bg-[#1877f2] px-4 py-3.5 text-sm font-semibold text-white shadow-[0_2px_12px_rgba(24,119,242,0.35)] transition-all hover:bg-[#166fe5] hover:shadow-[0_4px_20px_rgba(24,119,242,0.45)]"
-            >
-              <FacebookIcon size={18} color="white" />
-              Continue with Facebook
-              {/* Shine effect */}
-              <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-500 group-hover:translate-x-full" />
-            </button>
-
-            <div className="flex items-center gap-3 py-1">
-              <div className="h-px flex-1 bg-border/50" />
-              <span className="text-[11px] text-muted-foreground">or use a token manually</span>
-              <div className="h-px flex-1 bg-border/50" />
-            </div>
-
-            <button
-              onClick={() => setMode("manual")}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
-              Enter access token manually
-            </button>
-
-            {error && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {error}
-              </div>
-            )}
-
-            <details className="pt-1">
-              <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
-                Why Facebook login? ▸
-              </summary>
-              <div className="mt-2 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-                <p>Signing in with Facebook uses OAuth 2.0 — no password is shared with this app. Your ad accounts are fetched automatically, and you can revoke access any time from your <a href="https://www.facebook.com/settings?tab=applications" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Facebook App Settings</a>.</p>
-              </div>
-            </details>
-          </div>
-        )}
-
-        {mode === "manual" && (
-          <>
-            <Card className="w-full max-w-sm border-border/60">
-              <CardContent className="space-y-4 pt-5">
-                <button
-                  onClick={() => { setMode("choose"); setError(""); }}
-                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M19 12H5M12 5l-7 7 7 7" />
-                  </svg>
-                  Back
-                </button>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">Access Token</label>
-                  <Input
-                    type="password"
-                    placeholder="EAAxxxxxxxxxxxxxxxx…"
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    className="font-mono text-xs"
-                    autoComplete="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                  />
-                  <p className="text-[11px] text-muted-foreground">
-                    Get it from{" "}
-                    <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer"
-                      className="text-[#aaf345] underline-offset-2 hover:underline">
-                      Graph API Explorer
-                    </a>
-                    {" "}with <code className="rounded bg-muted px-1 text-[10px]">ads_management</code> + <code className="rounded bg-muted px-1 text-[10px]">ads_read</code> scopes.
-                  </p>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">Ad Account ID</label>
-                  <div className="relative flex items-center">
-                    <span className="absolute left-3 select-none font-mono text-xs text-muted-foreground">act_</span>
-                    <Input
-                      placeholder="123456789"
-                      value={adAccountId.replace(/^act_/i, "")}
-                      onChange={(e) => setAdAccountId(e.target.value.replace(/^act_/i, ""))}
-                      className="pl-10 font-mono text-xs"
-                      autoComplete="off"
-                      inputMode="numeric"
-                    />
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    Found in Meta Ads Manager → Account Settings, or in the URL as <code className="rounded bg-muted px-1 text-[10px]">act_XXXXXXX</code>.
-                  </p>
-                </div>
-
-                {error && (
-                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {error}
-                  </div>
-                )}
-
-                <Button
-                  className="w-full gap-2 bg-[#aaf345] text-black hover:bg-[#96da2e] disabled:opacity-40"
-                  onClick={handleSubmit}
-                  disabled={loading || !token.trim() || !adAccountId.trim()}
-                >
-                  {loading ? (
-                    <>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                      Verifying…
-                    </>
-                  ) : (
-                    <>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
-                      Connect
-                    </>
-                  )}
-                </Button>
-              </CardContent>
-            </Card>
-
-            <details className="w-full max-w-sm">
-              <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
-                How to get a long-lived token ▸
-              </summary>
-              <div className="mt-2 space-y-1.5 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-                <p>1. Open <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Graph API Explorer</a>.</p>
-                <p>2. Select your App → Generate Access Token → check <code className="rounded bg-muted px-1">ads_management</code> and <code className="rounded bg-muted px-1">ads_read</code>.</p>
-                <p>3. Copy the token above. Short-lived tokens expire in 1 hour; exchange via <code className="rounded bg-muted px-1">/oauth/access_token?grant_type=fb_exchange_token</code> for a 60-day token.</p>
-              </div>
-            </details>
-          </>
-        )}
+    <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_50px_rgba(170,243,69,0.25)]">
+        <FacebookIcon size={28} color="white" />
       </div>
-    </>
+
+      <div className="text-center">
+        <h2 className="text-xl font-semibold">Connect Meta Ads</h2>
+        <p className="mt-1.5 max-w-xs text-sm text-muted-foreground">
+          Sign in with Facebook or paste your credentials to start managing campaigns with AI.
+        </p>
+      </div>
+
+      {mode === "choose" && (
+        <div className="flex w-full max-w-sm flex-col gap-3">
+          <button
+            onClick={handleFbLogin}
+            className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl border border-[#1877f2]/40 bg-[#1877f2] px-4 py-3.5 text-sm font-semibold text-white shadow-[0_2px_12px_rgba(24,119,242,0.35)] transition-all hover:bg-[#166fe5] hover:shadow-[0_4px_20px_rgba(24,119,242,0.45)]"
+          >
+            <FacebookIcon size={18} color="white" />
+            Continue with Facebook
+            <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-500 group-hover:translate-x-full" />
+          </button>
+
+          <div className="flex items-center gap-3 py-1">
+            <div className="h-px flex-1 bg-border/50" />
+            <span className="text-[11px] text-muted-foreground">or use a token manually</span>
+            <div className="h-px flex-1 bg-border/50" />
+          </div>
+
+          <button
+            onClick={() => setMode("manual")}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            Enter access token manually
+          </button>
+
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</div>
+          )}
+
+          <details className="pt-1">
+            <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+              Why Facebook login? ▸
+            </summary>
+            <div className="mt-2 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+              <p>Uses OAuth 2.0 — no password is shared. You can revoke access any time from your{" "}
+                <a href="https://www.facebook.com/settings?tab=applications" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Facebook App Settings</a>.
+              </p>
+            </div>
+          </details>
+        </div>
+      )}
+
+      {mode === "manual" && (
+        <>
+          <Card className="w-full max-w-sm border-border/60">
+            <CardContent className="space-y-4 pt-5">
+              <button
+                onClick={() => { setMode("choose"); setError(""); }}
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 12H5M12 5l-7 7 7 7" />
+                </svg>
+                Back
+              </button>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">Access Token</label>
+                <Input
+                  type="password"
+                  placeholder="EAAxxxxxxxxxxxxxxxx…"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  className="font-mono text-xs"
+                  autoComplete="off" autoCorrect="off" spellCheck={false}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Get it from{" "}
+                  <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] underline-offset-2 hover:underline">
+                    Graph API Explorer
+                  </a>{" "}
+                  with <code className="rounded bg-muted px-1 text-[10px]">ads_management</code> + <code className="rounded bg-muted px-1 text-[10px]">ads_read</code> scopes.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">Ad Account ID</label>
+                <div className="relative flex items-center">
+                  <span className="absolute left-3 select-none font-mono text-xs text-muted-foreground">act_</span>
+                  <Input
+                    placeholder="123456789"
+                    value={adAccountId.replace(/^act_/i, "")}
+                    onChange={(e) => setAdAccountId(e.target.value.replace(/^act_/i, ""))}
+                    className="pl-10 font-mono text-xs"
+                    autoComplete="off" inputMode="numeric"
+                  />
+                </div>
+              </div>
+
+              {error && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</div>
+              )}
+
+              <Button
+                className="w-full gap-2 bg-[#aaf345] text-black hover:bg-[#96da2e] disabled:opacity-40"
+                onClick={handleSubmit}
+                disabled={loading || !token.trim() || !adAccountId.trim()}
+              >
+                {loading ? (
+                  <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>Verifying…</>
+                ) : (
+                  <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>Connect</>
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <details className="w-full max-w-sm">
+            <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+              How to get a long-lived token ▸
+            </summary>
+            <div className="mt-2 space-y-1.5 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+              <p>1. Open <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Graph API Explorer</a>.</p>
+              <p>2. Select your App → Generate Access Token → check <code className="rounded bg-muted px-1">ads_management</code> and <code className="rounded bg-muted px-1">ads_read</code>.</p>
+              <p>3. Exchange via <code className="rounded bg-muted px-1">/oauth/access_token?grant_type=fb_exchange_token</code> for a 60-day token.</p>
+            </div>
+          </details>
+        </>
+      )}
+    </div>
   );
 }
 
 // ─── Token Refresh Banner ─────────────────────────────────────────────────────
 
 function TokenRefreshBanner({
-  accountName,
-  token,
-  onTokenChange,
-  onSubmit,
-  onFbRefresh,
-  onDismiss,
-  loading,
-  error,
+  accountName, token, onTokenChange, onSubmit, onFbRefresh, onDismiss, loading, error,
 }: {
-  accountName: string;
-  token: string;
-  onTokenChange: (v: string) => void;
-  onSubmit: () => void;
-  onFbRefresh: () => void;
-  onDismiss: () => void;
-  loading: boolean;
-  error: string;
+  accountName: string; token: string; onTokenChange: (v: string) => void;
+  onSubmit: () => void; onFbRefresh: () => void; onDismiss: () => void;
+  loading: boolean; error: string;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
 
   return (
-    <div
-      className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-4 py-3 md:px-6"
-      style={{ animation: "fadeSlideIn 0.2s ease-out" }}
-    >
+    <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-4 py-3 md:px-6"
+      style={{ animation: "fadeSlideIn 0.2s ease-out" }}>
       <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-center">
-        {/* Icon + message */}
         <div className="flex min-w-0 items-start gap-3">
           <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/15">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -929,57 +862,37 @@ function TokenRefreshBanner({
           <div className="min-w-0">
             <p className="text-xs font-semibold text-amber-400">Access token expired</p>
             <p className="text-[11px] text-amber-300/70">
-              Your token for <span className="font-medium text-amber-300">{accountName}</span> has expired. Refresh to continue — your chat history is preserved.
+              Token for <span className="font-medium text-amber-300">{accountName}</span> expired. Refresh to continue — chat history preserved.
             </p>
           </div>
         </div>
-
-        {/* Buttons */}
         <div className="flex shrink-0 flex-col gap-1.5 sm:w-72">
-          {/* Facebook re-login button */}
           {FB_APP_ID && (
-            <button
-              onClick={onFbRefresh}
-              disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-[#1877f2] px-3 py-2 text-[11px] font-semibold text-white transition-colors hover:bg-[#166fe5] disabled:cursor-not-allowed disabled:opacity-40"
-            >
+            <button onClick={onFbRefresh} disabled={loading}
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-[#1877f2] px-3 py-2 text-[11px] font-semibold text-white transition-colors hover:bg-[#166fe5] disabled:opacity-40">
               <FacebookIcon size={11} color="white" />
               Re-connect with Facebook
             </button>
           )}
-
           <div className="flex gap-1.5">
             <Input
-              ref={ref}
-              type="password"
-              placeholder="Or paste new access token…"
-              value={token}
-              onChange={(e) => onTokenChange(e.target.value)}
+              ref={ref} type="password" placeholder="Or paste new access token…"
+              value={token} onChange={(e) => onTokenChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
               disabled={loading}
               className="h-8 flex-1 border-amber-500/30 bg-amber-950/50 font-mono text-[11px] text-amber-100 placeholder:text-amber-700 focus-visible:border-amber-500/60 focus-visible:ring-0"
             />
-            <button
-              onClick={onSubmit}
-              disabled={loading || !token.trim()}
-              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-amber-500 px-3 text-[11px] font-semibold text-black transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
-            >
+            <button onClick={onSubmit} disabled={loading || !token.trim()}
+              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-amber-500 px-3 text-[11px] font-semibold text-black transition-colors hover:bg-amber-400 disabled:opacity-40">
               {loading ? (
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                </svg>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
               ) : (
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M5 12h14M12 5l7 7-7 7" />
-                </svg>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
               )}
               Paste
             </button>
-            <button
-              onClick={onDismiss}
-              title="Dismiss"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-amber-500/60 transition-colors hover:bg-amber-500/10 hover:text-amber-400"
-            >
+            <button onClick={onDismiss} title="Dismiss"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-amber-500/60 transition-colors hover:bg-amber-500/10 hover:text-amber-400">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
@@ -1012,16 +925,16 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Multi-account OAuth picker (shown after redirect callback) ────────────
-  const [oauthToken, setOauthToken] = useState("");
-  const [oauthAccounts, setOauthAccounts] = useState<AdAccount[]>([]);
-  const [showOauthPicker, setShowOauthPicker] = useState(false);
-
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  // ── Auth expiry ───────────────────────────────────────────────────────────
+  // OAuth multi-account picker (shown after redirect)
+  const [oauthToken, setOauthToken] = useState("");
+  const [oauthAccounts, setOauthAccounts] = useState<AdAccount[]>([]);
+  const [showOauthPicker, setShowOauthPicker] = useState(false);
+
+  // Auth expiry
   const [authExpired, setAuthExpired] = useState(false);
   const [refreshToken, setRefreshToken] = useState("");
   const [refreshLoading, setRefreshLoading] = useState(false);
@@ -1030,6 +943,18 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // ── Persist helper ────────────────────────────────────────────────────────
+  const persistAuth = useCallback((token: string, acctId: string, acct: AdAccount) => {
+    setAccessToken(token);
+    setAdAccountId(acctId);
+    setSelectedAccount(acct);
+    setPhase("chat");
+    try {
+      localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: token, adAccountId: acctId, selectedAccount: acct }));
+    } catch { /* quota */ }
+  }, []);
+
+  // ── Load sessions from localStorage ──────────────────────────────────────
   useEffect(() => {
     if (typeof window !== "undefined") setSessions(loadSessions());
   }, []);
@@ -1038,10 +963,72 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     if (typeof window !== "undefined") saveSessions(sessions);
   }, [sessions]);
 
+  // ── On mount: check URL params first, then cookie, then localStorage ─────
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const fbToken = params.get("fb_token");
+    const fbAccountsRaw = params.get("fb_accounts");
+    const fbError = params.get("fb_error");
+
+    // Always clean OAuth params from URL so they're not visible / reused
+    if (fbToken || fbError || fbAccountsRaw) {
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete("fb_token");
+      clean.searchParams.delete("fb_accounts");
+      clean.searchParams.delete("fb_error");
+      // Also strip the legacy #_=_ fragment Facebook sometimes appends
+      window.history.replaceState({}, "", clean.pathname + (clean.search !== "?" ? clean.search : ""));
+    }
+
+    if (fbToken) {
+      let accounts: AdAccount[] = [];
+      try { accounts = JSON.parse(decodeURIComponent(fbAccountsRaw ?? "[]")); } catch { /* ignore */ }
+
+      if (accounts.length === 1) {
+        const acct = accounts[0];
+        const numericId = acct.id.replace(/^act_/, "");
+        persistAuth(fbToken, numericId, acct);
+        return;
+      }
+
+      if (accounts.length > 1) {
+        setOauthToken(fbToken);
+        setOauthAccounts(accounts);
+        setShowOauthPicker(true);
+        return;
+      }
+
+      // No accounts in URL (shouldn't happen with new callback) — fall through to cookie/ls
+    }
+
+    if (fbError) {
+      // OAuth failed — just stay on connect screen, nothing to do
+      return;
+    }
+
+    // Check cookie set by the callback route
+    const cookie = readAuthCookie();
+    if (cookie?.accessToken && cookie.accounts?.length) {
+      const accounts = cookie.accounts;
+      if (accounts.length === 1) {
+        const acct = accounts[0];
+        const numericId = acct.id.replace(/^act_/, "");
+        persistAuth(cookie.accessToken, numericId, acct);
+        return;
+      }
+      if (accounts.length > 1) {
+        setOauthToken(cookie.accessToken);
+        setOauthAccounts(accounts);
+        setShowOauthPicker(true);
+        return;
+      }
+    }
+
+    // Fall back to manual-connect localStorage
     try {
-      const raw = window.localStorage.getItem(LS_AUTH);
+      const raw = localStorage.getItem(LS_AUTH);
       if (!raw) return;
       const saved: { accessToken: string; adAccountId: string; selectedAccount?: AdAccount | null } = JSON.parse(raw);
       if (!saved.accessToken || !saved.adAccountId) return;
@@ -1049,99 +1036,50 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
       setAdAccountId(saved.adAccountId);
       if (saved.selectedAccount) { setSelectedAccount(saved.selectedAccount); setPhase("chat"); }
     } catch { /* ignore */ }
-  }, []);
-
-  // ── Pick up OAuth token from URL after Facebook redirect callback ──────────
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const fbToken = params.get("fb_token");
-    const fbError = params.get("fb_error");
-
-    if (fbError) {
-      // Clean the URL and let the user see the connect screen with an error
-      window.history.replaceState({}, "", window.location.pathname);
-      return;
-    }
-
-    if (!fbToken) return;
-
-    // Clean the token from the URL immediately
-    window.history.replaceState({}, "", window.location.pathname);
-
-    // Fetch ad accounts, then auto-connect (single account) or show picker
-    (async () => {
-      try {
-        const accounts = await fetchAdAccountsForUser(fbToken);
-        if (accounts.length === 0) return;
-        // Auto-connect to the first (or only) account
-        const acct = accounts[0];
-        const numericId = acct.id.replace(/^act_/, "");
-        setAccessToken(fbToken);
-        setAdAccountId(numericId);
-        setSelectedAccount(acct);
-        setPhase("chat");
-        window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: fbToken, adAccountId: numericId, selectedAccount: acct }));
-        if (accounts.length > 1) {
-          // Multiple accounts — show the picker
-          setOauthAccounts(accounts);
-          setOauthToken(fbToken);
-          setShowOauthPicker(true);
-        }
-      } catch { /* ignore — user can connect manually */ }
-    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  const handleManualConnect = useCallback(async (token: string, acctId: string) => {
-    try {
-      const res = await fetch(
-        `https://graph.facebook.com/${FB_API_VERSION}/act_${acctId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(token)}`
-      );
-      const data = await res.json();
-      const acct: AdAccount = {
-        id: `act_${acctId}`,
-        name: data.name ?? `Account ${acctId}`,
-        account_status: data.account_status ?? 1,
-        currency: data.currency ?? "USD",
-        timezone_name: data.timezone_name ?? "",
-      };
-      setAccessToken(token);
-      setAdAccountId(acctId);
-      setSelectedAccount(acct);
-      setPhase("chat");
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: token, adAccountId: acctId, selectedAccount: acct }));
-      }
-      setTimeout(() => inputRef.current?.focus(), 100);
-    } catch { /* ignore */ }
-  }, []);
+  // ── OAuth account pick (multi-account picker) ─────────────────────────────
+  const handleOauthAccountPick = useCallback((acct: AdAccount) => {
+    const numericId = acct.id.replace(/^act_/, "");
+    persistAuth(oauthToken, numericId, acct);
+    setShowOauthPicker(false);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }, [oauthToken, persistAuth]);
+
+  // ── Manual connect (ConnectScreen) ────────────────────────────────────────
+  const handleManualConnect = useCallback((token: string, acctId: string, accountMeta?: AdAccount) => {
+    const acct: AdAccount = accountMeta ?? {
+      id: `act_${acctId}`, name: `Account ${acctId}`,
+      account_status: 1, currency: "USD", timezone_name: "",
+    };
+    persistAuth(token, acctId, acct);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }, [persistAuth]);
 
   const disconnect = () => {
     setAccessToken(""); setAdAccountId(""); setSelectedAccount(null); setMessages([]);
     setPhase("connect"); setActiveSessionId(null); setAttachedImages([]);
     setAuthExpired(false); setRefreshToken(""); setRefreshError("");
-    if (typeof window !== "undefined") window.localStorage.removeItem(LS_AUTH);
+    setOauthToken(""); setOauthAccounts([]); setShowOauthPicker(false);
+    try { localStorage.removeItem(LS_AUTH); } catch { /* ignore */ }
+    // Clear cookie
+    document.cookie = "meta_ads_auth=; path=/; max-age=0";
   };
 
   // ── Auth error detection ──────────────────────────────────────────────────
-
   function isAuthError(text: string): boolean {
     try {
       const jsonMatch = text.match(/Error:\s*(\{[\s\S]*?\})/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1]);
-        if (parsed.code === 190) return true;
-      }
+      if (jsonMatch) { const p = JSON.parse(jsonMatch[1]); if (p.code === 190) return true; }
       if (/"code"\s*:\s*190/.test(text)) return true;
     } catch { /* ignore */ }
     return false;
   }
 
-  // ── Token refresh (keeps all messages / sessions intact) ──────────────────
-
+  // ── Token refresh ─────────────────────────────────────────────────────────
   const handleTokenRefresh = useCallback(async () => {
     const newToken = refreshToken.trim();
     if (!newToken || !adAccountId) return;
@@ -1152,11 +1090,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
         `https://graph.facebook.com/${FB_API_VERSION}/act_${adAccountId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(newToken)}`
       );
       const data = await res.json();
-      if (data.error) {
-        setRefreshError(data.error.message ?? "Invalid token — please try again.");
-        setRefreshLoading(false);
-        return;
-      }
+      if (data.error) { setRefreshError(data.error.message ?? "Invalid token."); setRefreshLoading(false); return; }
       const updatedAcct: AdAccount = {
         id: `act_${adAccountId}`,
         name: data.name ?? selectedAccount?.name ?? `Account ${adAccountId}`,
@@ -1164,54 +1098,28 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
         currency: data.currency ?? "USD",
         timezone_name: data.timezone_name ?? "",
       };
-      setAccessToken(newToken);
-      setSelectedAccount(updatedAcct);
-      setAuthExpired(false);
-      setRefreshToken("");
-      setRefreshError("");
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: newToken, adAccountId, selectedAccount: updatedAcct }));
-      }
+      persistAuth(newToken, adAccountId, updatedAcct);
+      setAuthExpired(false); setRefreshToken(""); setRefreshError("");
       setTimeout(() => inputRef.current?.focus(), 100);
-    } catch {
-      setRefreshError("Network error — could not reach Meta API.");
-    } finally {
-      setRefreshLoading(false);
-    }
-  }, [refreshToken, adAccountId, selectedAccount]);
+    } catch { setRefreshError("Network error."); }
+    finally { setRefreshLoading(false); }
+  }, [refreshToken, adAccountId, selectedAccount, persistAuth]);
 
-  // ── Facebook re-login for token refresh ───────────────────────────────────
-
-  const handleFbRefresh = useCallback(() => {
-    // Re-run the full OAuth redirect flow — the callback will update the token
-    redirectToFacebookLogin();
-  }, []);
+  const handleFbRefresh = useCallback(() => { redirectToFacebookLogin(); }, []);
 
   // ── Image attachment ──────────────────────────────────────────────────────
-
   const handleImageFiles = useCallback((files: FileList | File[]) => {
-    const fileArr = Array.from(files);
     const validTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-    const maxSize = 4 * 1024 * 1024;
-
-    for (const file of fileArr) {
-      if (!validTypes.includes(file.type)) {
-        alert(`"${file.name}" is not a supported image type. Please use JPG, PNG, GIF, or WebP.`);
-        continue;
-      }
-      if (file.size > maxSize) {
-        alert(`"${file.name}" is too large (max 4 MB).`);
-        continue;
-      }
-
+    for (const file of Array.from(files)) {
+      if (!validTypes.includes(file.type)) { alert(`"${file.name}" is not supported.`); continue; }
+      if (file.size > 4 * 1024 * 1024) { alert(`"${file.name}" exceeds 4 MB.`); continue; }
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
-        const base64 = dataUrl.split(",")[1] ?? "";
-        setAttachedImages((prev) => [
-          ...prev,
-          { filename: file.name, base64, dataUrl, mimeType: file.type, sizeLabel: formatBytes(file.size) },
-        ]);
+        setAttachedImages((prev) => [...prev, {
+          filename: file.name, base64: dataUrl.split(",")[1] ?? "",
+          dataUrl, mimeType: file.type, sizeLabel: formatBytes(file.size),
+        }]);
       };
       reader.readAsDataURL(file);
     }
@@ -1221,87 +1129,60 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     if (e.target.files?.length) handleImageFiles(e.target.files);
     e.target.value = "";
   };
-
-  const removeImage = (idx: number) => {
-    setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
-  };
-
+  const removeImage = (idx: number) => setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); };
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.files.length) handleImageFiles(e.dataTransfer.files);
-  };
-
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); if (e.dataTransfer.files.length) handleImageFiles(e.dataTransfer.files); };
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const items = Array.from(e.clipboardData.items);
-    const imageItems = items.filter((item) => item.type.startsWith("image/"));
-    if (imageItems.length === 0) return;
+    const imageItems = Array.from(e.clipboardData.items).filter((item) => item.type.startsWith("image/"));
+    if (!imageItems.length) return;
     e.preventDefault();
-    const files = imageItems.map((item) => item.getAsFile()).filter(Boolean) as File[];
-    handleImageFiles(files);
+    handleImageFiles(imageItems.map((item) => item.getAsFile()).filter(Boolean) as File[]);
   }, [handleImageFiles]);
 
   // ── Session management ────────────────────────────────────────────────────
-
   const startNewChat = useCallback(() => {
     setMessages([]); setActiveSessionId(null); setAttachedImages([]);
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
-
   const loadSession = useCallback((id: string) => {
     const s = sessions.find((s) => s.id === id);
-    if (!s) return;
-    setMessages(s.messages); setActiveSessionId(id);
+    if (s) { setMessages(s.messages); setActiveSessionId(id); }
   }, [sessions]);
-
   const deleteSession = useCallback((id: string) => {
     setSessions((prev) => prev.filter((s) => s.id !== id));
     if (activeSessionId === id) { setMessages([]); setActiveSessionId(null); }
   }, [activeSessionId]);
-
   const renameSession = useCallback((id: string, title: string) => {
     setSessions((prev) => prev.map((s) => s.id === id ? { ...s, title } : s));
   }, []);
 
   // ── Send message ──────────────────────────────────────────────────────────
-
   const sendMessage = useCallback(async () => {
     const hasText = input.trim().length > 0;
     const hasImages = attachedImages.length > 0;
     if ((!hasText && !hasImages) || loading || !accessToken || !selectedAccount) return;
 
     let richContent = input.trim();
-    if (hasImages && !hasText) {
-      richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating an ad.`;
-    }
+    if (hasImages && !hasText) richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating an ad.`;
 
     let apiContent = richContent;
     if (hasImages) {
       const imageDescriptions = attachedImages.map((img, i) =>
         `[Image ${i + 1}: filename="${img.filename}", base64_data_available=true, image_base64="${img.base64.slice(0, 20)}..."]`
       ).join("\n");
-
       const imageInstructions = attachedImages.map((img, i) =>
         `IMAGE_${i + 1}_FILENAME: ${img.filename}\nIMAGE_${i + 1}_BASE64: ${img.base64}`
       ).join("\n\n");
-
       apiContent = `${richContent}\n\nThe user has attached ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} for ad creation:\n${imageDescriptions}\n\nFull image data for upload_ad_image tool:\n${imageInstructions}`;
     }
 
-    const userMsg: Message = {
-      id: uid(),
-      role: "user",
-      content: richContent,
-      images: hasImages ? [...attachedImages] : undefined,
-    };
+    const userMsg: Message = { id: uid(), role: "user", content: richContent, images: hasImages ? [...attachedImages] : undefined };
     const assistantMsg: Message = { id: uid(), role: "assistant", content: "", steps: [], pending: true };
 
     const historyForApi = [
       ...messages.map((m) => ({
         role: m.role,
-        content: m.role === "assistant"
-          ? m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content
-          : m.content,
+        content: m.role === "assistant" ? m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content : m.content,
       })),
       { role: "user", content: apiContent },
     ];
@@ -1312,9 +1193,8 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
     setAttachedImages([]);
     setLoading(true);
 
-    const isFirst = messages.length === 0;
     const sessionId = activeSessionId ?? uid();
-    if (isFirst || !activeSessionId) {
+    if (!activeSessionId) {
       setActiveSessionId(sessionId);
       const title = richContent.slice(0, 60) + (richContent.length > 60 ? "…" : "");
       setSessions((prev) => [{
@@ -1344,9 +1224,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           try {
             const step: Step = JSON.parse(line);
             if (step.type === "done") continue;
-            if (step.type === "tool_result" && isAuthError(step.text)) {
-              setAuthExpired(true);
-            }
+            if (step.type === "tool_result" && isAuthError(step.text)) setAuthExpired(true);
             setMessages((prev) => {
               const updated = prev.map((m) =>
                 m.id === assistantMsg.id
@@ -1361,9 +1239,8 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
       }
     } catch (err) {
       setMessages((prev) => {
-        const updated = prev.map((m) =>
-          m.id === assistantMsg.id ? { ...m, steps: [...(m.steps ?? []), { type: "error" as StepType, text: "Connection error: " + String(err) }] } : m
-        );
+        const updated = prev.map((m) => m.id === assistantMsg.id
+          ? { ...m, steps: [...(m.steps ?? []), { type: "error" as StepType, text: "Connection error: " + String(err) }] } : m);
         setSessions((ps) => ps.map((s) => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
         return updated;
       });
@@ -1394,16 +1271,6 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
 
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !loading && !authExpired;
 
-  const handleOauthAccountPick = useCallback((acct: AdAccount) => {
-    const numericId = acct.id.replace(/^act_/, "");
-    setAccessToken(oauthToken);
-    setAdAccountId(numericId);
-    setSelectedAccount(acct);
-    setPhase("chat");
-    setShowOauthPicker(false);
-    window.localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: oauthToken, adAccountId: numericId, selectedAccount: acct }));
-  }, [oauthToken]);
-
   return (
     <>
       <style>{ANIMATION_STYLES}</style>
@@ -1415,8 +1282,7 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
         />
       )}
       <div className={"flex min-h-0 flex-col bg-background text-foreground " + (embedded ? "flex-1" : "h-[100svh]")}>
-
-        {/* Top header */}
+        {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/50 px-4 py-3 md:px-6">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#aaf345]">
@@ -1430,10 +1296,8 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           <div className="flex items-center gap-2">
             {phase === "chat" && selectedAccount ? (
               <>
-                <Badge
-                  variant="secondary"
-                  className={`hidden gap-1.5 font-mono text-[10px] sm:flex ${authExpired ? "border-amber-500/30 bg-amber-500/10 text-amber-400" : ""}`}
-                >
+                <Badge variant="secondary"
+                  className={`hidden gap-1.5 font-mono text-[10px] sm:flex ${authExpired ? "border-amber-500/30 bg-amber-500/10 text-amber-400" : ""}`}>
                   <span className={`inline-block h-1.5 w-1.5 rounded-full ${authExpired ? "bg-amber-500" : "bg-green-500"}`} />
                   {authExpired ? "Token expired" : selectedAccount.name}
                 </Badge>
@@ -1445,38 +1309,24 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           </div>
         </div>
 
-        {/* Token refresh banner — shown inline when token expires */}
         {phase === "chat" && authExpired && (
           <TokenRefreshBanner
             accountName={selectedAccount?.name ?? "your account"}
-            token={refreshToken}
-            onTokenChange={setRefreshToken}
-            onSubmit={handleTokenRefresh}
-            onFbRefresh={handleFbRefresh}
+            token={refreshToken} onTokenChange={setRefreshToken}
+            onSubmit={handleTokenRefresh} onFbRefresh={handleFbRefresh}
             onDismiss={() => { setAuthExpired(false); setRefreshError(""); }}
-            loading={refreshLoading}
-            error={refreshError}
+            loading={refreshLoading} error={refreshError}
           />
         )}
 
-        {/* Body */}
         <div className="flex min-h-0 flex-1">
-
-          {/* Sidebar */}
           {phase === "chat" && (
-            <Sidebar
-              sessions={sessions}
-              activeId={activeSessionId}
-              onSelect={loadSession}
-              onNew={startNewChat}
-              onDelete={deleteSession}
-              onRename={renameSession}
-              collapsed={sidebarCollapsed}
-              onToggle={() => setSidebarCollapsed((v) => !v)}
+            <Sidebar sessions={sessions} activeId={activeSessionId}
+              onSelect={loadSession} onNew={startNewChat}
+              onDelete={deleteSession} onRename={renameSession}
+              collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)}
             />
           )}
-
-          {/* Main */}
           <div className="flex min-h-0 flex-1 flex-col">
             {phase === "connect" && <ConnectScreen onConnect={handleManualConnect} />}
             {phase === "chat" && (
@@ -1502,29 +1352,19 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                           </button>
                         ))}
                       </div>
-                      <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/20 px-4 py-2.5 text-xs text-muted-foreground">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-                          <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
-                        </svg>
-                        <span>Attach images for image ads — or skip to create text/link ads without images</span>
-                      </div>
                     </div>
                   ) : (
                     <div className="mx-auto w-full max-w-3xl divide-y divide-border/20">
                       {messages.map((msg) =>
-                        msg.role === "user"
-                          ? <UserMessage key={msg.id} msg={msg} />
-                          : <AssistantMessage key={msg.id} msg={msg} />
+                        msg.role === "user" ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />
                       )}
                       <div ref={bottomRef} />
                     </div>
                   )}
                 </div>
 
-                {/* Input area */}
                 <div className="shrink-0 border-t border-border/50 px-4 py-4 md:px-6" onDragOver={handleDragOver} onDrop={handleDrop}>
                   <div className="mx-auto w-full max-w-3xl">
-
                     {attachedImages.length > 0 && (
                       <div className="mb-2 flex flex-wrap gap-2">
                         {attachedImages.map((img, i) => (
@@ -1532,46 +1372,25 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
                         ))}
                       </div>
                     )}
-
                     <div className="relative flex items-end rounded-xl border border-border/60 bg-muted/20 shadow-sm transition-colors focus-within:border-border focus-within:bg-background">
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={loading}
-                        title="Attach image for ad creation"
-                        className="mb-2 ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
-                      >
+                      <button type="button" onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image"
+                        className="mb-2 ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
                         </svg>
                       </button>
-
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/jpeg,image/png,image/gif,image/webp"
-                        multiple
-                        className="hidden"
-                        onChange={handleFileInputChange}
-                      />
-
+                      <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple className="hidden" onChange={handleFileInputChange} />
                       <Input
                         ref={inputRef}
                         placeholder={authExpired ? "Refresh your token above to continue…" : attachedImages.length > 0 ? "Describe how to use this image for an ad…" : "Message Meta Ads AI…"}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKey}
-                        onPaste={handlePaste}
-                        disabled={loading}
+                        value={input} onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKey} onPaste={handlePaste} disabled={loading}
                         className="flex-1 border-0 bg-transparent px-3 py-3 text-sm shadow-none placeholder:text-muted-foreground/50 focus-visible:ring-0"
                       />
-
                       <button onClick={sendMessage} disabled={!canSend}
-                        className="mb-2 mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#aaf345] text-white shadow-sm transition-all hover:bg-[#1565d8] disabled:cursor-not-allowed disabled:opacity-30">
+                        className="mb-2 mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#aaf345] text-white shadow-sm transition-all hover:bg-[#1565d8] disabled:opacity-30">
                         {loading ? (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
-                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                          </svg>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
                         ) : (
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M22 2L11 13" /><path d="M22 2L15 22 11 13 2 9l20-7z" />
