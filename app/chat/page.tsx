@@ -3,30 +3,16 @@
 import { useState, useRef, useEffect, useCallback, Suspense } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
 type StepType = "text" | "tool_call" | "tool_result" | "error" | "done";
+type Platform = "meta" | "google";
 
-type Step = {
-  type: StepType;
-  text: string;
-  tool?: string;
-  data?: unknown;
-};
+type Step = { type: StepType; text: string; tool?: string; platform?: Platform; data?: unknown };
 
-type AttachedImage = {
-  filename: string;
-  base64: string;
-  dataUrl: string;
-  mimeType: string;
-  sizeLabel: string;
-};
+type AttachedImage = { filename: string; base64: string; dataUrl: string; mimeType: string; sizeLabel: string };
 
 type Message = {
   id: string;
@@ -38,85 +24,39 @@ type Message = {
 };
 
 type ChatSession = {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: number;
-  updatedAt: number;
-  accountId: string;
-  accountName: string;
+  id: string; title: string; messages: Message[];
+  createdAt: number; updatedAt: number;
 };
 
-type AdAccount = {
-  id: string;
-  name: string;
-  account_status: number;
-  currency: string;
-  timezone_name: string;
-};
+type MetaAccount = { id: string; name: string; currency: string; account_status: number };
+type GoogleAccount = { id: string; name: string; currency_code: string; is_manager: boolean };
 
-// ─── Facebook OAuth config ────────────────────────────────────────────────────
+type MetaCreds = { accessToken: string; adAccountId: string; account: MetaAccount } | null;
+type GoogleCreds = { accessToken: string; customerId: string; account: GoogleAccount } | null;
+
+// ─── OAuth / API config ───────────────────────────────────────────────────────
 const FB_APP_ID = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID ?? "";
-const FB_OAUTH_SCOPES = "ads_management,ads_read,business_management";
-const FB_API_VERSION = "v25.0";
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+const META_API_VER = "v25.0";
 
-function redirectToFacebookLogin() {
-  if (typeof window === "undefined" || !FB_APP_ID) return;
+function redirectToFb() {
+  if (!FB_APP_ID) return;
   const state = Math.random().toString(36).slice(2);
   sessionStorage.setItem("fb_oauth_state", state);
-  const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
-  const url =
-    `https://www.facebook.com/dialog/oauth` +
-    `?client_id=${FB_APP_ID}` +
-    `&redirect_uri=${redirectUri}` +
-    `&scope=${encodeURIComponent(FB_OAUTH_SCOPES)}` +
-    `&state=${state}` +
-    `&response_type=code`;
-  window.location.href = url;
+  const ru = encodeURIComponent(`${window.location.origin}/api/auth/facebook/callback`);
+  window.location.href = `https://www.facebook.com/dialog/oauth?client_id=${FB_APP_ID}&redirect_uri=${ru}&scope=${encodeURIComponent("ads_management,ads_read,business_management")}&state=${state}&response_type=code`;
+}
+
+function redirectToGoogle() {
+  if (!GOOGLE_CLIENT_ID) return;
+  const state = Math.random().toString(36).slice(2);
+  sessionStorage.setItem("google_oauth_state", state);
+  const ru = encodeURIComponent(`${window.location.origin}/api/auth/google/callback`);
+  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${ru}&scope=${encodeURIComponent("https://www.googleapis.com/auth/adwords")}&state=${state}&response_type=code&access_type=offline&prompt=consent`;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
 const uid = () => Math.random().toString(36).slice(2);
-
-function formatRelativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days === 1) return "Yesterday";
-  if (days < 7) return `${days} days ago`;
-  return new Date(ts).toLocaleDateString();
-}
-
-function groupSessionsByDate(sessions: ChatSession[]) {
-  const groups: { label: string; sessions: ChatSession[] }[] = [];
-  const now = Date.now();
-  const DAY = 86400000;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
-
-  const buckets: Record<string, ChatSession[]> = {
-    Today: [], Yesterday: [], "Previous 7 days": [], "Previous 30 days": [], Older: [],
-  };
-
-  for (const s of sessions) {
-    const d = new Date(s.updatedAt); d.setHours(0, 0, 0, 0);
-    if (d.getTime() >= today.getTime()) buckets["Today"].push(s);
-    else if (d.getTime() >= yesterday.getTime()) buckets["Yesterday"].push(s);
-    else if (now - s.updatedAt < 7 * DAY) buckets["Previous 7 days"].push(s);
-    else if (now - s.updatedAt < 30 * DAY) buckets["Previous 30 days"].push(s);
-    else buckets["Older"].push(s);
-  }
-
-  for (const [label, sess] of Object.entries(buckets)) {
-    if (sess.length > 0) groups.push({ label, sessions: sess });
-  }
-  return groups;
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -124,88 +64,104 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
-// ─── localStorage / cookie helpers ───────────────────────────────────────────
-
-const LS_SESSIONS = "meta_ads_sessions";
-const LS_AUTH = "meta_ads_auth";
-
-function loadSessions(): ChatSession[] {
-  try { return JSON.parse(localStorage.getItem(LS_SESSIONS) ?? "[]"); } catch { return []; }
-}
-function saveSessions(s: ChatSession[]) {
-  try { localStorage.setItem(LS_SESSIONS, JSON.stringify(s)); } catch { /* quota */ }
-}
-
-/** Read the meta_ads_auth cookie set by the callback route */
-function readAuthCookie(): { accessToken: string; accounts: AdAccount[] } | null {
-  try {
-    const match = document.cookie.match(/(?:^|;\s*)meta_ads_auth=([^;]+)/);
-    if (!match) return null;
-    return JSON.parse(decodeURIComponent(match[1]));
-  } catch { return null; }
+function formatRelativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(diff / 3600000);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(diff / 86400000);
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
 }
 
-// ─── Tool icons ───────────────────────────────────────────────────────────────
+function groupSessions(sessions: ChatSession[]) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+  const buckets: Record<string, ChatSession[]> = { Today: [], Yesterday: [], "This week": [], Older: [] };
+  for (const s of sessions) {
+    const d = new Date(s.updatedAt); d.setHours(0, 0, 0, 0);
+    if (d >= today) buckets.Today.push(s);
+    else if (d >= yesterday) buckets.Yesterday.push(s);
+    else if (Date.now() - s.updatedAt < 7 * 86400000) buckets["This week"].push(s);
+    else buckets.Older.push(s);
+  }
+  return Object.entries(buckets).filter(([, v]) => v.length > 0).map(([label, sessions]) => ({ label, sessions }));
+}
 
-const TOOL_ICONS: Record<string, string> = {
-  list_campaigns: "⬡", get_campaign: "◈", get_campaign_insights: "◈",
-  create_campaign: "◆", update_campaign_budget: "◎", update_campaign_status: "◉",
-  update_campaign_objective: "◎", delete_campaign: "⚠", bulk_update_campaign_status: "◉",
-  list_adsets: "⬡", create_adset: "◆", update_adset_targeting: "◎",
-  update_adset_budget: "◎", update_adset_status: "◉", get_adset_insights: "◈",
-  list_ads: "⬡", update_ad_status: "◉", get_ad_insights: "◈",
-  upload_ad_image: "◼", create_ad: "◆", create_ad_from_creative: "◆",
-  list_custom_audiences: "⬡", create_custom_audience: "◆", create_lookalike_audience: "◆",
-};
+const LS_SESSIONS = "unified_ads_sessions";
+const LS_META_AUTH = "unified_ads_meta_auth";
+const LS_GOOGLE_AUTH = "unified_ads_google_auth";
+
+function loadSessions(): ChatSession[] { try { return JSON.parse(localStorage.getItem(LS_SESSIONS) ?? "[]"); } catch { return []; } }
+function saveSessions(s: ChatSession[]) { try { localStorage.setItem(LS_SESSIONS, JSON.stringify(s)); } catch { /**/ } }
+
+// ─── Platform colors / icons ──────────────────────────────────────────────────
+const PLATFORM_COLORS: Record<Platform, string> = { meta: "#1877f2", google: "#4285F4" };
+
+function MetaIcon({ size = 16, mono }: { size?: number; mono?: boolean }) {
+  const fill = mono ? "currentColor" : "white";
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={fill}>
+      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+    </svg>
+  );
+}
+
+function GoogleAdsIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24">
+      <path fill="#FBBC04" d="M3.68 14.87l5.69-9.86a2.87 2.87 0 0 1 4.95 2.87L8.63 17.74A2.87 2.87 0 0 1 3.68 14.87z"/>
+      <path fill="#4285F4" d="M20.32 14.87a2.87 2.87 0 0 1-4.95 2.87l-.95-1.64 2.47-4.28.95 1.64a2.87 2.87 0 0 1 2.48 1.41z"/>
+      <circle fill="#34A853" cx="6.16" cy="16.37" r="2.87"/>
+    </svg>
+  );
+}
+
+function PlatformBadge({ platform }: { platform: Platform }) {
+  return platform === "meta"
+    ? <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-[#1877f2]/15 text-[#1877f2]"><MetaIcon size={8} mono /> META</span>
+    : <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-[#4285F4]/15 text-[#4285F4]"><GoogleAdsIcon size={8} /> GOOGLE</span>;
+}
 
 // ─── Markdown Renderer ────────────────────────────────────────────────────────
-
 function renderInline(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
   const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`)/g;
   let last = 0; let match: RegExpExecArray | null; let key = 0;
   while ((match = re.exec(text)) !== null) {
     if (match.index > last) parts.push(text.slice(last, match.index));
-    if (match[2]) parts.push(<strong key={key++} className="font-semibold text-foreground">{match[2]}</strong>);
+    if (match[2]) parts.push(<strong key={key++} className="font-semibold">{match[2]}</strong>);
     else if (match[3]) parts.push(<em key={key++}>{match[3]}</em>);
-    else if (match[4]) parts.push(<code key={key++} className="rounded bg-muted px-1 py-0.5 font-mono text-[12px] text-foreground">{match[4]}</code>);
+    else if (match[4]) parts.push(<code key={key++} className="rounded bg-zinc-800 px-1 py-0.5 font-mono text-[11px] text-zinc-200">{match[4]}</code>);
     last = match.index + match[0].length;
   }
   if (last < text.length) parts.push(text.slice(last));
   return parts;
 }
 
-type MdBlock =
-  | { type: "table"; headers: string[]; rows: string[][] }
-  | { type: "heading"; level: number; text: string }
-  | { type: "hr" }
-  | { type: "ul"; items: string[] }
-  | { type: "ol"; items: string[] }
-  | { type: "code_block"; lang: string; code: string }
-  | { type: "paragraph"; text: string };
+type MdBlock = { type: "table"; headers: string[]; rows: string[][] } | { type: "heading"; level: number; text: string } | { type: "hr" } | { type: "ul"; items: string[] } | { type: "ol"; items: string[] } | { type: "code_block"; code: string } | { type: "paragraph"; text: string };
 
 function parseMarkdown(raw: string): MdBlock[] {
   const blocks: MdBlock[] = [];
-  const lines = raw.split("\n");
-  let i = 0;
+  const lines = raw.split("\n"); let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     if (/^```/.test(line)) {
-      const lang = line.slice(3).trim(); const codeLines: string[] = []; i++;
+      const codeLines: string[] = []; i++;
       while (i < lines.length && !/^```/.test(lines[i])) { codeLines.push(lines[i]); i++; }
-      blocks.push({ type: "code_block", lang, code: codeLines.join("\n") }); i++; continue;
+      blocks.push({ type: "code_block", code: codeLines.join("\n") }); i++; continue;
     }
-    if (i + 1 < lines.length && /^\s*\|?[\s-:]+[\|[\s-:]]+\|?\s*$/.test(lines[i + 1])) {
-      const sepLine = lines[i + 1];
-      if (/^[\|\s\-:]+$/.test(sepLine.replace(/[^|\-:\s]/g, ""))) {
-        const parseRow = (l: string) => l.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
-        const headers = parseRow(lines[i]); const rows: string[][] = []; i += 2;
-        while (i < lines.length && lines[i].includes("|")) { rows.push(parseRow(lines[i])); i++; }
-        blocks.push({ type: "table", headers, rows }); continue;
-      }
+    if (i + 1 < lines.length && /^\s*\|?[\s-:]+\|/.test(lines[i + 1])) {
+      const pr = (l: string) => l.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      const headers = pr(lines[i]); const rows: string[][] = []; i += 2;
+      while (i < lines.length && lines[i].includes("|")) { rows.push(pr(lines[i])); i++; }
+      blocks.push({ type: "table", headers, rows }); continue;
     }
-    const hMatch = line.match(/^(#{1,6})\s+(.+)$/);
-    if (hMatch) { blocks.push({ type: "heading", level: hMatch[1].length, text: hMatch[2] }); i++; continue; }
+    const hm = line.match(/^(#{1,6})\s+(.+)$/);
+    if (hm) { blocks.push({ type: "heading", level: hm[1].length, text: hm[2] }); i++; continue; }
     if (/^[-*_]{3,}\s*$/.test(line)) { blocks.push({ type: "hr" }); i++; continue; }
     if (/^[-*+]\s/.test(line)) {
       const items: string[] = [];
@@ -218,156 +174,86 @@ function parseMarkdown(raw: string): MdBlock[] {
       blocks.push({ type: "ol", items }); continue;
     }
     if (!line.trim()) { i++; continue; }
-    const paraLines: string[] = [];
-    while (i < lines.length && lines[i].trim() &&
-      !/^(#{1,6}\s|[-*+]\s|\d+\.\s|```|[-*_]{3,})/.test(lines[i]) &&
-      !(i + 1 < lines.length && /^\s*\|?[\s\-:]+[\|[\s\-:]]+\|?\s*$/.test(lines[i + 1]))) {
-      paraLines.push(lines[i]); i++;
-    }
-    if (paraLines.length) blocks.push({ type: "paragraph", text: paraLines.join("\n") });
+    const pLines: string[] = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|[-*+]\s|\d+\.\s|```|[-*_]{3,})/.test(lines[i])) { pLines.push(lines[i]); i++; }
+    if (pLines.length) blocks.push({ type: "paragraph", text: pLines.join("\n") });
   }
   return blocks;
+}
+
+function TypingCursor() {
+  return <span className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[1px] animate-[blink_1s_step-start_infinite] bg-current align-middle" />;
 }
 
 function MarkdownRenderer({ text, isPending }: { text: string; isPending?: boolean }) {
   const blocks = parseMarkdown(text);
   return (
-    <div className="space-y-3 text-sm leading-7 text-foreground">
+    <div className="space-y-3 text-sm leading-7 text-zinc-100">
       {blocks.map((block, bi) => {
         const isLast = bi === blocks.length - 1;
         if (block.type === "table") return (
-          <div key={bi} className="overflow-x-auto rounded-lg border border-border/50">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-border/60 bg-muted/40">
-                  {block.headers.map((h, hi) => <th key={hi} className="px-4 py-2.5 text-left font-semibold text-foreground text-xs tracking-wide">{renderInline(h)}</th>)}
+          <div key={bi} className="overflow-x-auto rounded-lg border border-zinc-700/60">
+            <table className="w-full border-collapse text-xs">
+              <thead><tr className="border-b border-zinc-700 bg-zinc-800/60">
+                {block.headers.map((h, hi) => <th key={hi} className="px-3 py-2 text-left font-semibold text-zinc-300">{renderInline(h)}</th>)}
+              </tr></thead>
+              <tbody>{block.rows.map((row, ri) => (
+                <tr key={ri} className="border-b border-zinc-800/60 last:border-0 hover:bg-zinc-800/30">
+                  {row.map((cell, ci) => <td key={ci} className="px-3 py-2 text-zinc-400">{renderInline(cell)}</td>)}
                 </tr>
-              </thead>
-              <tbody>
-                {block.rows.map((row, ri) => (
-                  <tr key={ri} className="border-b border-border/30 transition-colors hover:bg-muted/20 last:border-0">
-                    {row.map((cell, ci) => <td key={ci} className="px-4 py-2.5 text-muted-foreground align-middle">{renderInline(cell)}</td>)}
-                  </tr>
-                ))}
-              </tbody>
+              ))}</tbody>
             </table>
           </div>
         );
         if (block.type === "heading") {
           const Tag = `h${block.level}` as "h1"|"h2"|"h3"|"h4"|"h5"|"h6";
           const sizes: Record<number,string> = {1:"text-xl font-bold",2:"text-lg font-semibold",3:"text-base font-semibold",4:"text-sm font-semibold",5:"text-sm font-medium",6:"text-xs font-medium"};
-          return <Tag key={bi} className={`${sizes[block.level]??""} text-foreground`}>{renderInline(block.text)}</Tag>;
+          return <Tag key={bi} className={`${sizes[block.level] ?? ""} text-zinc-100`}>{renderInline(block.text)}</Tag>;
         }
-        if (block.type === "hr") return <hr key={bi} className="border-border/40" />;
-        if (block.type === "ul") return (
-          <ul key={bi} className="space-y-1 pl-5">
-            {block.items.map((item,ii) => <li key={ii} className="list-disc text-foreground marker:text-muted-foreground/50">{renderInline(item)}</li>)}
-          </ul>
-        );
-        if (block.type === "ol") return (
-          <ol key={bi} className="space-y-1 pl-5">
-            {block.items.map((item,ii) => <li key={ii} className="list-decimal text-foreground marker:text-muted-foreground/50">{renderInline(item)}</li>)}
-          </ol>
-        );
-        if (block.type === "code_block") return (
-          <pre key={bi} className="overflow-x-auto rounded-lg border border-border/40 bg-muted/50 px-4 py-3 font-mono text-xs leading-relaxed text-foreground">
-            <code>{block.code}</code>
-          </pre>
-        );
-        return (
-          <p key={bi} className="text-foreground">
-            {renderInline(block.text)}
-            {isPending && isLast && <TypingCursor />}
-          </p>
-        );
+        if (block.type === "hr") return <hr key={bi} className="border-zinc-700/50" />;
+        if (block.type === "ul") return <ul key={bi} className="space-y-1 pl-5">{block.items.map((it,ii) => <li key={ii} className="list-disc text-zinc-200 marker:text-zinc-600">{renderInline(it)}</li>)}</ul>;
+        if (block.type === "ol") return <ol key={bi} className="space-y-1 pl-5">{block.items.map((it,ii) => <li key={ii} className="list-decimal text-zinc-200 marker:text-zinc-600">{renderInline(it)}</li>)}</ol>;
+        if (block.type === "code_block") return <pre key={bi} className="overflow-x-auto rounded-lg border border-zinc-700/50 bg-zinc-900 px-4 py-3 font-mono text-xs text-zinc-300"><code>{block.code}</code></pre>;
+        return <p key={bi} className="text-zinc-200">{renderInline(block.text)}{isPending && isLast && <TypingCursor />}</p>;
       })}
       {isPending && blocks.length === 0 && <TypingCursor />}
     </div>
   );
 }
 
-// ─── Avatars & Cursor ─────────────────────────────────────────────────────────
-
-function AIAvatar() {
-  return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#aaf345] shadow-[0_0_12px_rgba(24,119,242,0.4)]">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
-      </svg>
-    </div>
-  );
-}
-
-function UserAvatar() {
-  return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-white">U</div>
-  );
-}
-
-function TypingCursor() {
-  return (
-    <span className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[1px] bg-current align-middle"
-      style={{ animation: "blink 1s step-start infinite" }} />
-  );
-}
-
-// ─── Image Preview Pills ──────────────────────────────────────────────────────
-
-function ImagePill({ img, onRemove }: { img: AttachedImage; onRemove?: () => void }) {
-  return (
-    <div className="group relative flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 p-1.5 pr-2.5">
-      <div className="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-border/40">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={img.dataUrl} alt={img.filename} className="h-full w-full object-cover" />
-      </div>
-      <div className="min-w-0">
-        <div className="max-w-[120px] truncate text-[11px] font-medium text-foreground">{img.filename}</div>
-        <div className="text-[10px] text-muted-foreground">{img.sizeLabel}</div>
-      </div>
-      {onRemove && (
-        <button
-          onClick={onRemove}
-          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-700 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive"
-          title="Remove image"
-        >
-          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-      )}
-    </div>
-  );
-}
-
 // ─── Tool Steps ───────────────────────────────────────────────────────────────
-
 function ToolSteps({ steps }: { steps: Step[] }) {
   const [open, setOpen] = useState(false);
-  const actionSteps = steps.filter((s) => s.type === "tool_call" || s.type === "tool_result");
-  if (actionSteps.length === 0) return null;
-  const hasError = actionSteps.some((s) => s.type === "tool_result" && s.text.startsWith("Error"));
-  const toolNames = [...new Set(actionSteps.filter((s) => s.type === "tool_call").map((s) => s.tool).filter(Boolean))];
+  const actionSteps = steps.filter(s => s.type === "tool_call" || s.type === "tool_result");
+  if (!actionSteps.length) return null;
+  const hasError = actionSteps.some(s => s.type === "tool_result" && s.text.startsWith("Error"));
+  const platforms = [...new Set(actionSteps.filter(s => s.platform).map(s => s.platform as Platform))];
+
   return (
     <div className="mb-3">
       <button onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground">
-        <span className="inline-block transition-transform duration-200" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
-        <span className={hasError ? "text-destructive" : ""}>
-          {hasError ? "⚠ Error in tool call" : `Used ${toolNames.length > 0 ? toolNames.slice(0, 2).join(", ") : "tools"}`}
-          {toolNames.length > 2 ? ` +${toolNames.length - 2} more` : ""}
+        className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-800/50 hover:text-zinc-300">
+        <span style={{ transform: open ? "rotate(90deg)" : "none", display: "inline-block", transition: "transform 0.15s" }}>▶</span>
+        <span className={hasError ? "text-red-400" : "text-zinc-500"}>
+          {hasError ? "⚠ Tool error" : `${platforms.length > 0 ? platforms.map(p => p === "meta" ? "Meta" : "Google").join(" + ") : "Tools"} · ${actionSteps.filter(s => s.type === "tool_call").length} calls`}
         </span>
+        {platforms.map(p => <PlatformBadge key={p} platform={p} />)}
       </button>
       {open && (
-        <div className="mt-1 space-y-2 rounded-lg border border-border/40 bg-muted/30 px-3 py-2.5 text-xs">
+        <div className="mt-1.5 space-y-1.5 rounded-xl border border-zinc-800 bg-zinc-900/80 px-3 py-3 text-xs backdrop-blur-sm">
           {actionSteps.map((step, i) => {
-            const icon = TOOL_ICONS[step.tool ?? ""] ?? "◆";
             const isResult = step.type === "tool_result";
             const isError = isResult && step.text.startsWith("Error");
             return (
               <div key={i} className="flex items-start gap-2">
-                <span className={`font-mono shrink-0 ${isError ? "text-destructive" : "text-muted-foreground"}`}>{isResult ? (isError ? "✗" : "✓") : icon}</span>
-                <span className={`font-mono shrink-0 ${isError ? "text-destructive" : "text-blue-400"}`}>{step.tool ?? (isResult ? "result" : "tool")}</span>
-                <span className={`min-w-0 whitespace-pre-wrap break-words leading-relaxed ${isError ? "text-destructive" : "text-muted-foreground"}`}>{step.text}</span>
+                {step.platform && <PlatformBadge platform={step.platform} />}
+                <span className={`shrink-0 font-mono ${isError ? "text-red-400" : isResult ? "text-emerald-500" : "text-zinc-500"}`}>
+                  {isResult ? (isError ? "✗" : "✓") : "→"}
+                </span>
+                <span className={`font-mono shrink-0 text-[10px] ${isError ? "text-red-400" : isResult ? "text-zinc-400" : step.platform === "meta" ? "text-[#1877f2]" : "text-[#4285F4]"}`}>
+                  {step.tool ?? (isResult ? "result" : "tool")}
+                </span>
+                <span className={`min-w-0 break-words leading-relaxed ${isError ? "text-red-400" : "text-zinc-500"}`}>{step.text}</span>
               </div>
             );
           })}
@@ -378,29 +264,58 @@ function ToolSteps({ steps }: { steps: Step[] }) {
 }
 
 // ─── Message components ───────────────────────────────────────────────────────
+function AIAvatar() {
+  return (
+    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_16px_rgba(66,133,244,0.4)]">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+      </svg>
+    </div>
+  );
+}
+
+function UserAvatar() {
+  return <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-700 text-xs font-bold text-zinc-200">U</div>;
+}
+
+function ImagePill({ img, onRemove }: { img: AttachedImage; onRemove?: () => void }) {
+  return (
+    <div className="group relative flex items-center gap-2 rounded-lg border border-zinc-700/60 bg-zinc-800/50 p-1.5 pr-2.5">
+      <div className="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-zinc-700/40">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={img.dataUrl} alt={img.filename} className="h-full w-full object-cover" />
+      </div>
+      <div className="min-w-0">
+        <div className="max-w-[120px] truncate text-[11px] font-medium text-zinc-300">{img.filename}</div>
+        <div className="text-[10px] text-zinc-500">{img.sizeLabel}</div>
+      </div>
+      {onRemove && (
+        <button onClick={onRemove}
+          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-600 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500">
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
 
 function AssistantMessage({ msg }: { msg: Message }) {
-  const steps = msg.steps ?? [];
-  const textSteps = steps.filter((s) => s.type === "text");
-  const errorSteps = steps.filter((s) => s.type === "error");
+  const textSteps = (msg.steps ?? []).filter(s => s.type === "text");
+  const errorSteps = (msg.steps ?? []).filter(s => s.type === "error");
   return (
-    <div className="group flex w-full gap-4 px-4 py-5 transition-colors" style={{ animation: "fadeSlideIn 0.2s ease-out" }}>
+    <div className="flex w-full gap-4 px-4 py-5" style={{ animation: "fadeIn .2s ease-out" }}>
       <AIAvatar />
       <div className="min-w-0 flex-1 pt-0.5">
-        <ToolSteps steps={steps} />
-        {textSteps.length > 0 ? (
-          <MarkdownRenderer text={textSteps.map((s) => s.text).join("\n")} isPending={msg.pending} />
-        ) : msg.pending ? (
-          <div className="flex items-center gap-1 pt-1">
-            {[0, 1, 2].map((i) => (
-              <span key={i} className="h-2 w-2 rounded-full bg-muted-foreground/50"
-                style={{ animation: "bounce 1.4s ease-in-out infinite", animationDelay: `${i * 0.16}s` }} />
-            ))}
-          </div>
-        ) : null}
-        {errorSteps.map((step, i) => (
-          <div key={i} className="mt-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{step.text}</div>
-        ))}
+        <ToolSteps steps={msg.steps ?? []} />
+        {textSteps.length > 0
+          ? <MarkdownRenderer text={textSteps.map(s => s.text).join("\n")} isPending={msg.pending} />
+          : msg.pending
+            ? <div className="flex gap-1 pt-1">{[0,1,2].map(i => <span key={i} className="h-2 w-2 rounded-full bg-zinc-600" style={{ animation: `bounce 1.4s ease-in-out ${i * 0.16}s infinite` }} />)}</div>
+            : null
+        }
+        {errorSteps.map((s, i) => <div key={i} className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">{s.text}</div>)}
       </div>
     </div>
   );
@@ -408,66 +323,167 @@ function AssistantMessage({ msg }: { msg: Message }) {
 
 function UserMessage({ msg }: { msg: Message }) {
   return (
-    <div className="flex w-full justify-end gap-4 px-4 py-5" style={{ animation: "fadeSlideIn 0.15s ease-out" }}>
+    <div className="flex w-full justify-end gap-4 px-4 py-5" style={{ animation: "fadeIn .15s ease-out" }}>
       <div className="max-w-[75%] space-y-2">
         {msg.images && msg.images.length > 0 && (
           <div className="flex flex-wrap justify-end gap-2">
-            {msg.images.map((img, i) => (
-              <ImagePill key={i} img={img} />
-            ))}
+            {msg.images.map((img, i) => <ImagePill key={i} img={img} />)}
           </div>
         )}
-        {msg.content && (
-          <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-7 text-white shadow-sm dark:bg-zinc-700">{msg.content}</div>
-        )}
+        {msg.content && <div className="rounded-2xl bg-zinc-700/80 px-4 py-3 text-sm leading-7 text-zinc-100 shadow-sm">{msg.content}</div>}
       </div>
       <UserAvatar />
     </div>
   );
 }
 
-// ─── Sidebar ──────────────────────────────────────────────────────────────────
-
-function Sidebar({
-  sessions, activeId, onSelect, onNew, onDelete, onRename, collapsed, onToggle,
+// ─── Platform Connection Panel ────────────────────────────────────────────────
+function ConnectionPanel({
+  metaCreds, googleCreds,
+  onConnectMeta, onConnectGoogle,
+  onDisconnectMeta, onDisconnectGoogle,
 }: {
-  sessions: ChatSession[];
-  activeId: string | null;
-  onSelect: (id: string) => void;
-  onNew: () => void;
-  onDelete: (id: string) => void;
-  onRename: (id: string, title: string) => void;
-  collapsed: boolean;
-  onToggle: () => void;
+  metaCreds: MetaCreds; googleCreds: GoogleCreds;
+  onConnectMeta: (token: string, accountId: string, account: MetaAccount) => void;
+  onConnectGoogle: (token: string, customerId: string, account: GoogleAccount) => void;
+  onDisconnectMeta: () => void;
+  onDisconnectGoogle: () => void;
 }) {
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const renameRef = useRef<HTMLInputElement>(null);
+  const [metaToken, setMetaToken] = useState("");
+  const [metaAcctId, setMetaAcctId] = useState("");
+  const [googleToken, setGoogleToken] = useState("");
+  const [googleCustId, setGoogleCustId] = useState("");
+  const [metaLoading, setMetaLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [metaError, setMetaError] = useState("");
+  const [googleError, setGoogleError] = useState("");
 
-  useEffect(() => { if (renamingId) renameRef.current?.focus(); }, [renamingId]);
+  const connectMeta = async () => {
+    const tok = metaToken.trim(); const id = metaAcctId.trim().replace(/^act_/i, "");
+    if (!tok || !id) { setMetaError("Token and Account ID required."); return; }
+    setMetaLoading(true); setMetaError("");
+    try {
+      const res = await fetch(`https://graph.facebook.com/${META_API_VER}/act_${id}?fields=id,name,account_status,currency&access_token=${encodeURIComponent(tok)}`);
+      const data = await res.json();
+      if (data.error) { setMetaError(data.error.message ?? "Invalid credentials."); return; }
+      onConnectMeta(tok, id, data as MetaAccount);
+      setMetaToken(""); setMetaAcctId("");
+    } catch { setMetaError("Network error."); }
+    finally { setMetaLoading(false); }
+  };
 
-  const groups = groupSessionsByDate(sessions);
+  const connectGoogle = async () => {
+    const tok = googleToken.trim(); const id = googleCustId.trim().replace(/-/g, "");
+    if (!tok || !id) { setGoogleError("Token and Customer ID required."); return; }
+    setGoogleLoading(true); setGoogleError("");
+    try {
+      const res = await fetch(`https://googleads.googleapis.com/v18/customers/${id}?fields=id,descriptiveName,currencyCode,manager`, { headers: { Authorization: `Bearer ${tok}`, "developer-token": "" } });
+      const data = await res.json();
+      if (data.error) { setGoogleError(data.error.message ?? "Invalid credentials."); return; }
+      onConnectGoogle(tok, id, { id, name: data.descriptiveName ?? `Account ${id}`, currency_code: data.currencyCode ?? "USD", is_manager: data.manager ?? false });
+      setGoogleToken(""); setGoogleCustId("");
+    } catch { setGoogleError("Network error."); }
+    finally { setGoogleLoading(false); }
+  };
 
   return (
-    <div
-      className="flex flex-col border-r border-border/50 bg-muted/10 transition-all duration-300 shrink-0 overflow-hidden"
-      style={{ width: collapsed ? "52px" : "260px", minWidth: collapsed ? "52px" : "260px" }}
-    >
-      <div className={`flex items-center border-b border-border/30 px-3 py-3 ${collapsed ? "justify-center" : "justify-between"}`}>
-        {!collapsed && (
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">Chats</span>
+    <div className="space-y-4">
+      {/* Meta */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#1877f2]"><MetaIcon size={14} /></div>
+            <span className="text-sm font-semibold text-zinc-200">Meta Ads</span>
+            {metaCreds && <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Connected</span>}
+          </div>
+          {metaCreds
+            ? <button onClick={onDisconnectMeta} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors">Disconnect</button>
+            : FB_APP_ID && <button onClick={redirectToFb} className="flex items-center gap-1.5 rounded-lg bg-[#1877f2] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#166fe5] transition-colors"><MetaIcon size={11} /> OAuth</button>
+          }
+        </div>
+        {metaCreds ? (
+          <div className="rounded-lg bg-zinc-800/50 px-3 py-2.5 text-xs">
+            <div className="font-medium text-zinc-300">{metaCreds.account.name}</div>
+            <div className="text-zinc-500">act_{metaCreds.adAccountId} · {metaCreds.account.currency}</div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <Input type="password" placeholder="Access token (EAAxx…)" value={metaToken} onChange={e => setMetaToken(e.target.value)} className="h-8 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#1877f2]/50 focus-visible:ring-0" />
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-mono text-[10px] text-zinc-500">act_</span>
+                <Input placeholder="Account ID" value={metaAcctId.replace(/^act_/i, "")} onChange={e => setMetaAcctId(e.target.value)} className="h-8 pl-9 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#1877f2]/50 focus-visible:ring-0" />
+              </div>
+              <button onClick={connectMeta} disabled={metaLoading || !metaToken.trim() || !metaAcctId.trim()} className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1877f2] px-3 text-[11px] font-semibold text-white hover:bg-[#166fe5] disabled:opacity-40 transition-colors whitespace-nowrap">
+                {metaLoading ? <svg width="11" height="11" className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg> : null}Connect
+              </button>
+            </div>
+            {metaError && <p className="text-[10px] text-red-400">{metaError}</p>}
+          </div>
         )}
+      </div>
+
+      {/* Google */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-white border border-zinc-700"><GoogleAdsIcon size={16} /></div>
+            <span className="text-sm font-semibold text-zinc-200">Google Ads</span>
+            {googleCreds && <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Connected</span>}
+          </div>
+          {googleCreds
+            ? <button onClick={onDisconnectGoogle} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors">Disconnect</button>
+            : GOOGLE_CLIENT_ID && <button onClick={redirectToGoogle} className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100 transition-colors"><svg width="11" height="11" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>OAuth</button>
+          }
+        </div>
+        {googleCreds ? (
+          <div className="rounded-lg bg-zinc-800/50 px-3 py-2.5 text-xs">
+            <div className="font-medium text-zinc-300">{googleCreds.account.name}</div>
+            <div className="text-zinc-500">{googleCreds.customerId} · {googleCreds.account.currency_code}{googleCreds.account.is_manager && " · MCC"}</div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <Input type="password" placeholder="Access token (ya29.…)" value={googleToken} onChange={e => setGoogleToken(e.target.value)} className="h-8 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#4285F4]/50 focus-visible:ring-0" />
+            <div className="flex gap-2">
+              <Input placeholder="Customer ID (no dashes)" value={googleCustId} onChange={e => setGoogleCustId(e.target.value.replace(/-/g, ""))} className="h-8 flex-1 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#4285F4]/50 focus-visible:ring-0" />
+              <button onClick={connectGoogle} disabled={googleLoading || !googleToken.trim() || !googleCustId.trim()} className="flex h-8 items-center gap-1.5 rounded-lg bg-[#4285F4] px-3 text-[11px] font-semibold text-white hover:bg-[#3367d6] disabled:opacity-40 transition-colors whitespace-nowrap">
+                {googleLoading ? <svg width="11" height="11" className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg> : null}Connect
+              </button>
+            </div>
+            {googleError && <p className="text-[10px] text-red-400">{googleError}</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+function Sidebar({
+  sessions, activeId, onSelect, onNew, onDelete, metaCreds, googleCreds,
+  onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle, collapsed, onToggle,
+}: {
+  sessions: ChatSession[]; activeId: string | null;
+  onSelect: (id: string) => void; onNew: () => void; onDelete: (id: string) => void;
+  metaCreds: MetaCreds; googleCreds: GoogleCreds;
+  onConnectMeta: (t: string, a: string, acct: MetaAccount) => void;
+  onConnectGoogle: (t: string, c: string, acct: GoogleAccount) => void;
+  onDisconnectMeta: () => void; onDisconnectGoogle: () => void;
+  collapsed: boolean; onToggle: () => void;
+}) {
+  const groups = groupSessions(sessions);
+  return (
+    <div className="flex flex-col border-r border-zinc-800/60 bg-zinc-950 transition-all duration-300 shrink-0 overflow-hidden"
+      style={{ width: collapsed ? "52px" : "280px", minWidth: collapsed ? "52px" : "280px" }}>
+      <div className={`flex items-center border-b border-zinc-800/60 px-3 py-3 ${collapsed ? "justify-center" : "justify-between"}`}>
+        {!collapsed && <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Ads Manager AI</span>}
         <div className="flex items-center gap-1">
           {!collapsed && (
-            <button onClick={onNew} title="New chat"
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
+            <button onClick={onNew} title="New chat" className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
           )}
-          <button onClick={onToggle} title={collapsed ? "Expand" : "Collapse"}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+          <button onClick={onToggle} className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               {collapsed ? <path d="M9 18l6-6-6-6" /> : <path d="M15 18l-6-6 6-6" />}
             </svg>
@@ -477,740 +493,231 @@ function Sidebar({
 
       {collapsed ? (
         <div className="flex flex-col items-center gap-1.5 overflow-y-auto py-3">
-          <button onClick={onNew} title="New chat"
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
+          <button onClick={onNew} className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
           </button>
-          <div className="my-1 h-px w-6 bg-border/40" />
-          {sessions.slice(0, 12).map((s) => (
+          <div className="my-1 h-px w-6 bg-zinc-800" />
+          {sessions.slice(0, 12).map(s => (
             <button key={s.id} onClick={() => onSelect(s.id)} title={s.title}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg text-xs font-semibold transition-colors
-                ${s.id === activeId ? "bg-[#aaf345]/15 text-[#aaf345]" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
+              className={`flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold transition-colors ${s.id === activeId ? "bg-gradient-to-br from-[#1877f2]/20 to-[#4285F4]/20 text-blue-400" : "text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"}`}>
               {s.title.charAt(0).toUpperCase()}
             </button>
           ))}
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto py-2 scrollbar-thin">
-          {groups.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-muted">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              </div>
-              <p className="text-xs text-muted-foreground">No conversations yet.<br />Start by sending a message.</p>
-            </div>
-          ) : (
-            groups.map((group) => (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Connection panel */}
+          <div className="shrink-0 border-b border-zinc-800/60 px-3 py-3">
+            <ConnectionPanel
+              metaCreds={metaCreds} googleCreds={googleCreds}
+              onConnectMeta={onConnectMeta} onConnectGoogle={onConnectGoogle}
+              onDisconnectMeta={onDisconnectMeta} onDisconnectGoogle={onDisconnectGoogle}
+            />
+          </div>
+          {/* Chat history */}
+          <div className="flex-1 overflow-y-auto py-2">
+            {groups.length === 0 ? (
+              <div className="px-4 py-8 text-center text-xs text-zinc-600">No conversations yet</div>
+            ) : groups.map(group => (
               <div key={group.label} className="mb-1">
-                <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
-                  {group.label}
-                </div>
-                {group.sessions.map((session) => (
+                <div className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-700">{group.label}</div>
+                {group.sessions.map(session => (
                   <div key={session.id} className="group/item relative mx-1">
-                    {renamingId === session.id ? (
-                      <div className="mx-1 flex items-center rounded-lg bg-muted px-2 py-2">
-                        <input
-                          ref={renameRef}
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") { onRename(session.id, renameValue.trim() || session.title); setRenamingId(null); }
-                            if (e.key === "Escape") setRenamingId(null);
-                          }}
-                          onBlur={() => { onRename(session.id, renameValue.trim() || session.title); setRenamingId(null); }}
-                          className="w-full bg-transparent text-xs text-foreground outline-none"
-                        />
+                    <button onClick={() => onSelect(session.id)}
+                      className={`relative w-full rounded-lg px-3 py-2 text-left transition-colors ${session.id === activeId ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"}`}>
+                      <div className="truncate text-xs leading-5">{session.title}</div>
+                      <div className="text-[9px] text-zinc-700">{formatRelativeTime(session.updatedAt)}</div>
+                      <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover/item:flex">
+                        <span role="button" onClick={e => { e.stopPropagation(); onDelete(session.id); }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:bg-red-500/10 hover:text-red-400 transition-colors">
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6M10 11v6M14 11v6M9 6V4h6v2" />
+                          </svg>
+                        </span>
                       </div>
-                    ) : (
-                      <button
-                        onClick={() => onSelect(session.id)}
-                        className={`relative w-full rounded-lg px-3 py-2 text-left transition-colors
-                          ${session.id === activeId
-                            ? "bg-muted text-foreground"
-                            : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                          }`}
-                      >
-                        <div className="flex items-start gap-1">
-                          <span className="flex-1 min-w-0 truncate text-xs leading-5">{session.title}</span>
-                        </div>
-                        <div className="mt-0.5 text-[10px] text-muted-foreground/40">{formatRelativeTime(session.updatedAt)}</div>
-                        <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden items-center gap-0.5 group-hover/item:flex">
-                          <div className="absolute -left-6 top-0 h-full w-6 bg-gradient-to-l from-muted/80 to-transparent" />
-                          <span role="button" title="Rename"
-                            onClick={(e) => { e.stopPropagation(); setRenamingId(session.id); setRenameValue(session.title); }}
-                            className="relative z-10 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground">
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                            </svg>
-                          </span>
-                          <span role="button" title="Delete"
-                            onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
-                            className="relative z-10 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="3 6 5 6 21 6" />
-                              <path d="M19 6l-1 14H6L5 6" />
-                              <path d="M10 11v6M14 11v6" />
-                              <path d="M9 6V4h6v2" />
-                            </svg>
-                          </span>
-                        </div>
-                      </button>
-                    )}
+                    </button>
                   </div>
                 ))}
               </div>
-            ))
-          )}
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-// ─── Facebook icon ────────────────────────────────────────────────────────────
+// ─── Suggestion chips ─────────────────────────────────────────────────────────
+const BOTH_SUGGESTIONS = [
+  "Compare Meta vs Google performance last 30 days",
+  "Show all my campaigns across both platforms",
+  "Which platform has better ROAS?",
+  "Pause underperforming campaigns on both platforms",
+];
+const META_SUGGESTIONS = ["Show Meta campaigns", "Meta ad insights (last 30 days)", "List Meta ad sets"];
+const GOOGLE_SUGGESTIONS = ["Show Google campaigns", "Google Ads metrics last 30 days", "Search terms report"];
 
-function FacebookIcon({ size = 20, color = "currentColor" }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-    </svg>
-  );
-}
-
-// ─── Ad Account Picker Modal ──────────────────────────────────────────────────
-
-function AdAccountPicker({
-  accounts,
-  onSelect,
-  onCancel,
-}: {
-  accounts: AdAccount[];
-  onSelect: (account: AdAccount) => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      style={{ animation: "fadeSlideIn 0.15s ease-out" }}>
-      <div className="w-full max-w-sm rounded-2xl border border-border/60 bg-background shadow-2xl">
-        <div className="flex items-center justify-between border-b border-border/40 px-5 py-4">
-          <div>
-            <h3 className="text-sm font-semibold">Select Ad Account</h3>
-            <p className="text-[11px] text-muted-foreground">Choose which account to manage</p>
-          </div>
-          <button onClick={onCancel}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="max-h-72 overflow-y-auto py-2">
-          {accounts.length === 0 ? (
-            <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-              No ad accounts found for this Facebook account.
-            </div>
-          ) : (
-            accounts.map((acct) => {
-              const isActive = acct.account_status === 1;
-              const numericId = acct.id.replace(/^act_/, "");
-              return (
-                <button
-                  key={acct.id}
-                  onClick={() => onSelect(acct)}
-                  disabled={!isActive}
-                  className="flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold
-                    ${isActive ? "bg-[#aaf345]/20 text-[#6db52b]" : "bg-muted text-muted-foreground"}`}>
-                    {acct.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-medium text-foreground">{acct.name}</div>
-                    <div className="text-[10px] text-muted-foreground">
-                      act_{numericId} · {acct.currency}
-                      {!isActive && <span className="ml-1.5 text-amber-500">Inactive</span>}
-                    </div>
-                  </div>
-                  {isActive && (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground">
-                      <path d="M5 12h14M12 5l7 7-7 7" />
-                    </svg>
-                  )}
-                </button>
-              );
-            })
-          )}
-        </div>
-        <div className="border-t border-border/40 px-5 py-3">
-          <button onClick={onCancel} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Connect screen ───────────────────────────────────────────────────────────
-
-function ConnectScreen({ onConnect }: {
-  onConnect: (accessToken: string, adAccountId: string, accountMeta?: AdAccount) => void;
-}) {
-  const [mode, setMode] = useState<"choose" | "manual">("choose");
-  const [token, setToken] = useState("");
-  const [adAccountId, setAdAccountId] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleFbLogin = () => {
-    if (!FB_APP_ID) {
-      setError("NEXT_PUBLIC_FACEBOOK_APP_ID is not set. Add it to .env.local and restart.");
-      return;
-    }
-    setError("");
-    redirectToFacebookLogin();
-  };
-
-  const handleSubmit = async () => {
-    const cleanToken = token.trim();
-    const cleanAcct = adAccountId.trim().replace(/^act_/i, "");
-    if (!cleanToken) { setError("Access token is required."); return; }
-    if (!cleanAcct || !/^\d+$/.test(cleanAcct)) { setError("Ad Account ID must be numeric (e.g. 123456789)."); return; }
-
-    setError("");
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `https://graph.facebook.com/${FB_API_VERSION}/act_${cleanAcct}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(cleanToken)}`
-      );
-      const data = await res.json();
-      if (data.error) { setError(data.error.message ?? "Invalid token or account ID."); setLoading(false); return; }
-      onConnect(cleanToken, cleanAcct, data as AdAccount);
-    } catch {
-      setError("Network error — could not reach Meta API.");
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-12">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_50px_rgba(170,243,69,0.25)]">
-        <FacebookIcon size={28} color="white" />
-      </div>
-
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">Connect Meta Ads</h2>
-        <p className="mt-1.5 max-w-xs text-sm text-muted-foreground">
-          Sign in with Facebook or paste your credentials to start managing campaigns with AI.
-        </p>
-      </div>
-
-      {mode === "choose" && (
-        <div className="flex w-full max-w-sm flex-col gap-3">
-          <button
-            onClick={handleFbLogin}
-            className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-xl border border-[#1877f2]/40 bg-[#1877f2] px-4 py-3.5 text-sm font-semibold text-white shadow-[0_2px_12px_rgba(24,119,242,0.35)] transition-all hover:bg-[#166fe5] hover:shadow-[0_4px_20px_rgba(24,119,242,0.45)]"
-          >
-            <FacebookIcon size={18} color="white" />
-            Continue with Facebook
-            <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-500 group-hover:translate-x-full" />
-          </button>
-
-          <div className="flex items-center gap-3 py-1">
-            <div className="h-px flex-1 bg-border/50" />
-            <span className="text-[11px] text-muted-foreground">or use a token manually</span>
-            <div className="h-px flex-1 bg-border/50" />
-          </div>
-
-          <button
-            onClick={() => setMode("manual")}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-            Enter access token manually
-          </button>
-
-          {error && (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</div>
-          )}
-
-          <details className="pt-1">
-            <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
-              Why Facebook login? ▸
-            </summary>
-            <div className="mt-2 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-              <p>Uses OAuth 2.0 — no password is shared. You can revoke access any time from your{" "}
-                <a href="https://www.facebook.com/settings?tab=applications" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Facebook App Settings</a>.
-              </p>
-            </div>
-          </details>
-        </div>
-      )}
-
-      {mode === "manual" && (
-        <>
-          <Card className="w-full max-w-sm border-border/60">
-            <CardContent className="space-y-4 pt-5">
-              <button
-                onClick={() => { setMode("choose"); setError(""); }}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M19 12H5M12 5l-7 7 7 7" />
-                </svg>
-                Back
-              </button>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-foreground">Access Token</label>
-                <Input
-                  type="password"
-                  placeholder="EAAxxxxxxxxxxxxxxxx…"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  className="font-mono text-xs"
-                  autoComplete="off" autoCorrect="off" spellCheck={false}
-                />
-                <p className="text-[11px] text-muted-foreground">
-                  Get it from{" "}
-                  <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] underline-offset-2 hover:underline">
-                    Graph API Explorer
-                  </a>{" "}
-                  with <code className="rounded bg-muted px-1 text-[10px]">ads_management</code> + <code className="rounded bg-muted px-1 text-[10px]">ads_read</code> scopes.
-                </p>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-foreground">Ad Account ID</label>
-                <div className="relative flex items-center">
-                  <span className="absolute left-3 select-none font-mono text-xs text-muted-foreground">act_</span>
-                  <Input
-                    placeholder="123456789"
-                    value={adAccountId.replace(/^act_/i, "")}
-                    onChange={(e) => setAdAccountId(e.target.value.replace(/^act_/i, ""))}
-                    className="pl-10 font-mono text-xs"
-                    autoComplete="off" inputMode="numeric"
-                  />
-                </div>
-              </div>
-
-              {error && (
-                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</div>
-              )}
-
-              <Button
-                className="w-full gap-2 bg-[#aaf345] text-black hover:bg-[#96da2e] disabled:opacity-40"
-                onClick={handleSubmit}
-                disabled={loading || !token.trim() || !adAccountId.trim()}
-              >
-                {loading ? (
-                  <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>Verifying…</>
-                ) : (
-                  <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>Connect</>
-                )}
-              </Button>
-            </CardContent>
-          </Card>
-
-          <details className="w-full max-w-sm">
-            <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
-              How to get a long-lived token ▸
-            </summary>
-            <div className="mt-2 space-y-1.5 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-xs text-muted-foreground leading-relaxed">
-              <p>1. Open <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener noreferrer" className="text-[#aaf345] hover:underline">Graph API Explorer</a>.</p>
-              <p>2. Select your App → Generate Access Token → check <code className="rounded bg-muted px-1">ads_management</code> and <code className="rounded bg-muted px-1">ads_read</code>.</p>
-              <p>3. Exchange via <code className="rounded bg-muted px-1">/oauth/access_token?grant_type=fb_exchange_token</code> for a 60-day token.</p>
-            </div>
-          </details>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ─── Token Refresh Banner ─────────────────────────────────────────────────────
-
-function TokenRefreshBanner({
-  accountName, token, onTokenChange, onSubmit, onFbRefresh, onDismiss, loading, error,
-}: {
-  accountName: string; token: string; onTokenChange: (v: string) => void;
-  onSubmit: () => void; onFbRefresh: () => void; onDismiss: () => void;
-  loading: boolean; error: string;
-}) {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
-
-  return (
-    <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-4 py-3 md:px-6"
-      style={{ animation: "fadeSlideIn 0.2s ease-out" }}>
-      <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/15">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-              <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
-          </div>
-          <div className="min-w-0">
-            <p className="text-xs font-semibold text-amber-400">Access token expired</p>
-            <p className="text-[11px] text-amber-300/70">
-              Token for <span className="font-medium text-amber-300">{accountName}</span> expired. Refresh to continue — chat history preserved.
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col gap-1.5 sm:w-72">
-          {FB_APP_ID && (
-            <button onClick={onFbRefresh} disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-[#1877f2] px-3 py-2 text-[11px] font-semibold text-white transition-colors hover:bg-[#166fe5] disabled:opacity-40">
-              <FacebookIcon size={11} color="white" />
-              Re-connect with Facebook
-            </button>
-          )}
-          <div className="flex gap-1.5">
-            <Input
-              ref={ref} type="password" placeholder="Or paste new access token…"
-              value={token} onChange={(e) => onTokenChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
-              disabled={loading}
-              className="h-8 flex-1 border-amber-500/30 bg-amber-950/50 font-mono text-[11px] text-amber-100 placeholder:text-amber-700 focus-visible:border-amber-500/60 focus-visible:ring-0"
-            />
-            <button onClick={onSubmit} disabled={loading || !token.trim()}
-              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-amber-500 px-3 text-[11px] font-semibold text-black transition-colors hover:bg-amber-400 disabled:opacity-40">
-              {loading ? (
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-              ) : (
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
-              )}
-              Paste
-            </button>
-            <button onClick={onDismiss} title="Dismiss"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-amber-500/60 transition-colors hover:bg-amber-500/10 hover:text-amber-400">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          {error && <p className="text-[10px] text-red-400">{error}</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const ANIMATION_STYLES = `
-  @keyframes fadeSlideIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-  @keyframes bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+// ─── Animations ───────────────────────────────────────────────────────────────
+const ANIM = `
+@keyframes fadeIn { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
+@keyframes bounce { 0%,80%,100%{transform:scale(.6);opacity:.4} 40%{transform:scale(1);opacity:1} }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 `;
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-
-function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
+function UnifiedAdsChatInner() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [phase, setPhase] = useState<"connect" | "chat">("connect");
-  const [accessToken, setAccessToken] = useState("");
-  const [adAccountId, setAdAccountId] = useState("");
-  const [selectedAccount, setSelectedAccount] = useState<AdAccount | null>(null);
-
-  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  // OAuth multi-account picker (shown after redirect)
-  const [oauthToken, setOauthToken] = useState("");
-  const [oauthAccounts, setOauthAccounts] = useState<AdAccount[]>([]);
-  const [showOauthPicker, setShowOauthPicker] = useState(false);
+  const [metaCreds, setMetaCreds] = useState<MetaCreds>(null);
+  const [googleCreds, setGoogleCreds] = useState<GoogleCreds>(null);
 
-  // Auth expiry
-  const [authExpired, setAuthExpired] = useState(false);
-  const [refreshToken, setRefreshToken] = useState("");
-  const [refreshLoading, setRefreshLoading] = useState(false);
-  const [refreshError, setRefreshError] = useState("");
-
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // ── Persist helper ────────────────────────────────────────────────────────
-  const persistAuth = useCallback((token: string, acctId: string, acct: AdAccount) => {
-    setAccessToken(token);
-    setAdAccountId(acctId);
-    setSelectedAccount(acct);
-    setPhase("chat");
-    try {
-      localStorage.setItem(LS_AUTH, JSON.stringify({ accessToken: token, adAccountId: acctId, selectedAccount: acct }));
-    } catch { /* quota */ }
-  }, []);
+  useEffect(() => { if (typeof window !== "undefined") setSessions(loadSessions()); }, []);
+  useEffect(() => { if (typeof window !== "undefined") saveSessions(sessions); }, [sessions]);
 
-  // ── Load sessions from localStorage ──────────────────────────────────────
-  useEffect(() => {
-    if (typeof window !== "undefined") setSessions(loadSessions());
-  }, []);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") saveSessions(sessions);
-  }, [sessions]);
-
-  // ── On mount: check URL params first, then cookie, then localStorage ─────
+  // Load persisted auth
   useEffect(() => {
     if (typeof window === "undefined") return;
+    try {
+      const m = localStorage.getItem(LS_META_AUTH);
+      if (m) setMetaCreds(JSON.parse(m));
+    } catch { /**/ }
+    try {
+      const g = localStorage.getItem(LS_GOOGLE_AUTH);
+      if (g) setGoogleCreds(JSON.parse(g));
+    } catch { /**/ }
 
+    // Handle OAuth redirects
     const params = new URLSearchParams(window.location.search);
-    const fbToken = params.get("fb_token");
-    const fbAccountsRaw = params.get("fb_accounts");
-    const fbError = params.get("fb_error");
-
-    // Always clean OAuth params from URL so they're not visible / reused
-    if (fbToken || fbError || fbAccountsRaw) {
+    const fbToken = params.get("fb_token"); const fbAccounts = params.get("fb_accounts");
+    const gToken = params.get("g_token"); const gAccounts = params.get("g_accounts");
+    if (fbToken || gToken || params.get("fb_error") || params.get("g_error")) {
       const clean = new URL(window.location.href);
-      clean.searchParams.delete("fb_token");
-      clean.searchParams.delete("fb_accounts");
-      clean.searchParams.delete("fb_error");
-      // Also strip the legacy #_=_ fragment Facebook sometimes appends
+      ["fb_token","fb_accounts","fb_error","g_token","g_accounts","g_error"].forEach(k => clean.searchParams.delete(k));
       window.history.replaceState({}, "", clean.pathname + (clean.search !== "?" ? clean.search : ""));
     }
-
     if (fbToken) {
-      let accounts: AdAccount[] = [];
-      try { accounts = JSON.parse(decodeURIComponent(fbAccountsRaw ?? "[]")); } catch { /* ignore */ }
-
-      if (accounts.length === 1) {
-        const acct = accounts[0];
-        const numericId = acct.id.replace(/^act_/, "");
-        persistAuth(fbToken, numericId, acct);
-        return;
-      }
-
-      if (accounts.length > 1) {
-        setOauthToken(fbToken);
-        setOauthAccounts(accounts);
-        setShowOauthPicker(true);
-        return;
-      }
-
-      // No accounts in URL (shouldn't happen with new callback) — fall through to cookie/ls
+      try {
+        const accounts: MetaAccount[] = JSON.parse(decodeURIComponent(fbAccounts ?? "[]"));
+        if (accounts[0]) {
+          const acct = accounts[0]; const id = acct.id.replace(/^act_/, "");
+          const creds = { accessToken: fbToken, adAccountId: id, account: acct };
+          setMetaCreds(creds); localStorage.setItem(LS_META_AUTH, JSON.stringify(creds));
+        }
+      } catch { /**/ }
     }
-
-    if (fbError) {
-      // OAuth failed — just stay on connect screen, nothing to do
-      return;
+    if (gToken) {
+      try {
+        const accounts: GoogleAccount[] = JSON.parse(decodeURIComponent(gAccounts ?? "[]"));
+        if (accounts[0]) {
+          const creds = { accessToken: gToken, customerId: accounts[0].id, account: accounts[0] };
+          setGoogleCreds(creds); localStorage.setItem(LS_GOOGLE_AUTH, JSON.stringify(creds));
+        }
+      } catch { /**/ }
     }
-
-    // Check cookie set by the callback route
-    const cookie = readAuthCookie();
-    if (cookie?.accessToken && cookie.accounts?.length) {
-      const accounts = cookie.accounts;
-      if (accounts.length === 1) {
-        const acct = accounts[0];
-        const numericId = acct.id.replace(/^act_/, "");
-        persistAuth(cookie.accessToken, numericId, acct);
-        return;
-      }
-      if (accounts.length > 1) {
-        setOauthToken(cookie.accessToken);
-        setOauthAccounts(accounts);
-        setShowOauthPicker(true);
-        return;
-      }
-    }
-
-    // Fall back to manual-connect localStorage
-    try {
-      const raw = localStorage.getItem(LS_AUTH);
-      if (!raw) return;
-      const saved: { accessToken: string; adAccountId: string; selectedAccount?: AdAccount | null } = JSON.parse(raw);
-      if (!saved.accessToken || !saved.adAccountId) return;
-      setAccessToken(saved.accessToken);
-      setAdAccountId(saved.adAccountId);
-      if (saved.selectedAccount) { setSelectedAccount(saved.selectedAccount); setPhase("chat"); }
-    } catch { /* ignore */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // ── OAuth account pick (multi-account picker) ─────────────────────────────
-  const handleOauthAccountPick = useCallback((acct: AdAccount) => {
-    const numericId = acct.id.replace(/^act_/, "");
-    persistAuth(oauthToken, numericId, acct);
-    setShowOauthPicker(false);
-    setTimeout(() => inputRef.current?.focus(), 100);
-  }, [oauthToken, persistAuth]);
+  const connectMeta = useCallback((token: string, accountId: string, account: MetaAccount) => {
+    const creds = { accessToken: token, adAccountId: accountId, account };
+    setMetaCreds(creds);
+    try { localStorage.setItem(LS_META_AUTH, JSON.stringify(creds)); } catch { /**/ }
+  }, []);
 
-  // ── Manual connect (ConnectScreen) ────────────────────────────────────────
-  const handleManualConnect = useCallback((token: string, acctId: string, accountMeta?: AdAccount) => {
-    const acct: AdAccount = accountMeta ?? {
-      id: `act_${acctId}`, name: `Account ${acctId}`,
-      account_status: 1, currency: "USD", timezone_name: "",
-    };
-    persistAuth(token, acctId, acct);
-    setTimeout(() => inputRef.current?.focus(), 100);
-  }, [persistAuth]);
+  const connectGoogle = useCallback((token: string, customerId: string, account: GoogleAccount) => {
+    const creds = { accessToken: token, customerId, account };
+    setGoogleCreds(creds);
+    try { localStorage.setItem(LS_GOOGLE_AUTH, JSON.stringify(creds)); } catch { /**/ }
+  }, []);
 
-  const disconnect = () => {
-    setAccessToken(""); setAdAccountId(""); setSelectedAccount(null); setMessages([]);
-    setPhase("connect"); setActiveSessionId(null); setAttachedImages([]);
-    setAuthExpired(false); setRefreshToken(""); setRefreshError("");
-    setOauthToken(""); setOauthAccounts([]); setShowOauthPicker(false);
-    try { localStorage.removeItem(LS_AUTH); } catch { /* ignore */ }
-    // Clear cookie
-    document.cookie = "meta_ads_auth=; path=/; max-age=0";
-  };
+  const disconnectMeta = useCallback(() => {
+    setMetaCreds(null);
+    try { localStorage.removeItem(LS_META_AUTH); } catch { /**/ }
+  }, []);
 
-  // ── Auth error detection ──────────────────────────────────────────────────
-  function isAuthError(text: string): boolean {
-    try {
-      const jsonMatch = text.match(/Error:\s*(\{[\s\S]*?\})/);
-      if (jsonMatch) { const p = JSON.parse(jsonMatch[1]); if (p.code === 190) return true; }
-      if (/"code"\s*:\s*190/.test(text)) return true;
-    } catch { /* ignore */ }
-    return false;
-  }
+  const disconnectGoogle = useCallback(() => {
+    setGoogleCreds(null);
+    try { localStorage.removeItem(LS_GOOGLE_AUTH); } catch { /**/ }
+  }, []);
 
-  // ── Token refresh ─────────────────────────────────────────────────────────
-  const handleTokenRefresh = useCallback(async () => {
-    const newToken = refreshToken.trim();
-    if (!newToken || !adAccountId) return;
-    setRefreshLoading(true);
-    setRefreshError("");
-    try {
-      const res = await fetch(
-        `https://graph.facebook.com/${FB_API_VERSION}/act_${adAccountId}?fields=id,name,account_status,currency,timezone_name&access_token=${encodeURIComponent(newToken)}`
-      );
-      const data = await res.json();
-      if (data.error) { setRefreshError(data.error.message ?? "Invalid token."); setRefreshLoading(false); return; }
-      const updatedAcct: AdAccount = {
-        id: `act_${adAccountId}`,
-        name: data.name ?? selectedAccount?.name ?? `Account ${adAccountId}`,
-        account_status: data.account_status ?? 1,
-        currency: data.currency ?? "USD",
-        timezone_name: data.timezone_name ?? "",
-      };
-      persistAuth(newToken, adAccountId, updatedAcct);
-      setAuthExpired(false); setRefreshToken(""); setRefreshError("");
-      setTimeout(() => inputRef.current?.focus(), 100);
-    } catch { setRefreshError("Network error."); }
-    finally { setRefreshLoading(false); }
-  }, [refreshToken, adAccountId, selectedAccount, persistAuth]);
-
-  const handleFbRefresh = useCallback(() => { redirectToFacebookLogin(); }, []);
-
-  // ── Image attachment ──────────────────────────────────────────────────────
+  // Image handling
   const handleImageFiles = useCallback((files: FileList | File[]) => {
-    const validTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
     for (const file of Array.from(files)) {
-      if (!validTypes.includes(file.type)) { alert(`"${file.name}" is not supported.`); continue; }
-      if (file.size > 4 * 1024 * 1024) { alert(`"${file.name}" exceeds 4 MB.`); continue; }
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > 4 * 1024 * 1024) { alert(`${file.name} exceeds 4MB`); continue; }
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = e => {
         const dataUrl = e.target?.result as string;
-        setAttachedImages((prev) => [...prev, {
-          filename: file.name, base64: dataUrl.split(",")[1] ?? "",
-          dataUrl, mimeType: file.type, sizeLabel: formatBytes(file.size),
-        }]);
+        setAttachedImages(prev => [...prev, { filename: file.name, base64: dataUrl.split(",")[1] ?? "", dataUrl, mimeType: file.type, sizeLabel: formatBytes(file.size) }]);
       };
       reader.readAsDataURL(file);
     }
   }, []);
 
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.length) handleImageFiles(e.target.files);
-    e.target.value = "";
-  };
-  const removeImage = (idx: number) => setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); };
-  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); if (e.dataTransfer.files.length) handleImageFiles(e.dataTransfer.files); };
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); handleImageFiles(e.dataTransfer.files); };
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const imageItems = Array.from(e.clipboardData.items).filter((item) => item.type.startsWith("image/"));
-    if (!imageItems.length) return;
+    const imgs = Array.from(e.clipboardData.items).filter(i => i.type.startsWith("image/"));
+    if (!imgs.length) return;
     e.preventDefault();
-    handleImageFiles(imageItems.map((item) => item.getAsFile()).filter(Boolean) as File[]);
+    handleImageFiles(imgs.map(i => i.getAsFile()).filter(Boolean) as File[]);
   }, [handleImageFiles]);
 
-  // ── Session management ────────────────────────────────────────────────────
-  const startNewChat = useCallback(() => {
-    setMessages([]); setActiveSessionId(null); setAttachedImages([]);
-    setTimeout(() => inputRef.current?.focus(), 100);
-  }, []);
-  const loadSession = useCallback((id: string) => {
-    const s = sessions.find((s) => s.id === id);
-    if (s) { setMessages(s.messages); setActiveSessionId(id); }
-  }, [sessions]);
-  const deleteSession = useCallback((id: string) => {
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    if (activeSessionId === id) { setMessages([]); setActiveSessionId(null); }
-  }, [activeSessionId]);
-  const renameSession = useCallback((id: string, title: string) => {
-    setSessions((prev) => prev.map((s) => s.id === id ? { ...s, title } : s));
-  }, []);
+  // Session management
+  const startNewChat = useCallback(() => { setMessages([]); setActiveSessionId(null); setAttachedImages([]); setTimeout(() => inputRef.current?.focus(), 100); }, []);
+  const loadSession = useCallback((id: string) => { const s = sessions.find(s => s.id === id); if (s) { setMessages(s.messages); setActiveSessionId(id); } }, [sessions]);
+  const deleteSession = useCallback((id: string) => { setSessions(prev => prev.filter(s => s.id !== id)); if (activeSessionId === id) { setMessages([]); setActiveSessionId(null); } }, [activeSessionId]);
 
-  // ── Send message ──────────────────────────────────────────────────────────
+  const isConnected = !!(metaCreds || googleCreds);
+
   const sendMessage = useCallback(async () => {
     const hasText = input.trim().length > 0;
     const hasImages = attachedImages.length > 0;
-    if ((!hasText && !hasImages) || loading || !accessToken || !selectedAccount) return;
+    if ((!hasText && !hasImages) || loading || !isConnected) return;
 
     let richContent = input.trim();
-    if (hasImages && !hasText) richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating an ad.`;
+    if (hasImages && !hasText) richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating a Meta ad.`;
 
     let apiContent = richContent;
     if (hasImages) {
-      const imageDescriptions = attachedImages.map((img, i) =>
-        `[Image ${i + 1}: filename="${img.filename}", base64_data_available=true, image_base64="${img.base64.slice(0, 20)}..."]`
-      ).join("\n");
-      const imageInstructions = attachedImages.map((img, i) =>
-        `IMAGE_${i + 1}_FILENAME: ${img.filename}\nIMAGE_${i + 1}_BASE64: ${img.base64}`
-      ).join("\n\n");
-      apiContent = `${richContent}\n\nThe user has attached ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} for ad creation:\n${imageDescriptions}\n\nFull image data for upload_ad_image tool:\n${imageInstructions}`;
+      const instruc = attachedImages.map((img, i) => `IMAGE_${i + 1}_FILENAME: ${img.filename}\nIMAGE_${i + 1}_BASE64: ${img.base64}`).join("\n\n");
+      apiContent = `${richContent}\n\nFull image data for meta_upload_ad_image tool:\n${instruc}`;
     }
 
     const userMsg: Message = { id: uid(), role: "user", content: richContent, images: hasImages ? [...attachedImages] : undefined };
     const assistantMsg: Message = { id: uid(), role: "assistant", content: "", steps: [], pending: true };
-
     const historyForApi = [
-      ...messages.map((m) => ({
-        role: m.role,
-        content: m.role === "assistant" ? m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content : m.content,
-      })),
+      ...messages.map(m => ({ role: m.role, content: m.role === "assistant" ? m.steps?.filter(s => s.type === "text").map(s => s.text).join("\n") || m.content : m.content })),
       { role: "user", content: apiContent },
     ];
 
     const newMessages = [...messages, userMsg, assistantMsg];
-    setMessages(newMessages);
-    setInput("");
-    setAttachedImages([]);
-    setLoading(true);
+    setMessages(newMessages); setInput(""); setAttachedImages([]); setLoading(true);
 
     const sessionId = activeSessionId ?? uid();
     if (!activeSessionId) {
       setActiveSessionId(sessionId);
       const title = richContent.slice(0, 60) + (richContent.length > 60 ? "…" : "");
-      setSessions((prev) => [{
-        id: sessionId, title, messages: newMessages,
-        createdAt: Date.now(), updatedAt: Date.now(),
-        accountId: selectedAccount.id, accountName: selectedAccount.name,
-      }, ...prev.filter((s) => s.id !== sessionId)]);
+      setSessions(prev => [{ id: sessionId, title, messages: newMessages, createdAt: Date.now(), updatedAt: Date.now() }, ...prev.filter(s => s.id !== sessionId)]);
     }
 
     try {
-      const res = await fetch("/api/metaChat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: historyForApi, accessToken, adAccountId }),
-      });
+      const body: Record<string, unknown> = { messages: historyForApi };
+      if (metaCreds) body.meta = { accessToken: metaCreds.accessToken, adAccountId: metaCreds.adAccountId };
+      if (googleCreds) body.google = { accessToken: googleCreds.accessToken, customerId: googleCreds.customerId };
+
+      const res = await fetch("/api/adsChat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.body) throw new Error("No response body");
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -1224,187 +731,169 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
           try {
             const step: Step = JSON.parse(line);
             if (step.type === "done") continue;
-            if (step.type === "tool_result" && isAuthError(step.text)) setAuthExpired(true);
-            setMessages((prev) => {
-              const updated = prev.map((m) =>
-                m.id === assistantMsg.id
-                  ? { ...m, steps: [...(m.steps ?? []), step], content: step.type === "text" ? (m.content ? m.content + "\n" : "") + step.text : m.content }
-                  : m
-              );
-              setSessions((ps) => ps.map((s) => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
+            setMessages(prev => {
+              const updated = prev.map(m => m.id === assistantMsg.id
+                ? { ...m, steps: [...(m.steps ?? []), step], content: step.type === "text" ? (m.content ? m.content + "\n" : "") + step.text : m.content }
+                : m);
+              setSessions(ps => ps.map(s => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
               return updated;
             });
-          } catch { /* ignore */ }
+          } catch { /**/ }
         }
       }
     } catch (err) {
-      setMessages((prev) => {
-        const updated = prev.map((m) => m.id === assistantMsg.id
-          ? { ...m, steps: [...(m.steps ?? []), { type: "error" as StepType, text: "Connection error: " + String(err) }] } : m);
-        setSessions((ps) => ps.map((s) => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
+      setMessages(prev => {
+        const updated = prev.map(m => m.id === assistantMsg.id ? { ...m, steps: [...(m.steps ?? []), { type: "error" as StepType, text: "Connection error: " + String(err) }] } : m);
+        setSessions(ps => ps.map(s => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
         return updated;
       });
     } finally {
-      setMessages((prev) => {
-        const finalized = prev.map((m) => m.id === assistantMsg.id ? { ...m, pending: false } : m);
-        setSessions((ps) => ps.map((s) => s.id === sessionId ? { ...s, messages: finalized, updatedAt: Date.now() } : s));
-        return finalized;
-      });
-      setLoading(false);
-      inputRef.current?.focus();
+      setMessages(prev => { const f = prev.map(m => m.id === assistantMsg.id ? { ...m, pending: false } : m); setSessions(ps => ps.map(s => s.id === sessionId ? { ...s, messages: f, updatedAt: Date.now() } : s)); return f; });
+      setLoading(false); inputRef.current?.focus();
     }
-  }, [input, attachedImages, loading, accessToken, selectedAccount, messages, activeSessionId, adAccountId]);
+  }, [input, attachedImages, loading, isConnected, messages, activeSessionId, metaCreds, googleCreds]);
 
-  const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-  };
+  const handleKey = (e: React.KeyboardEvent) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
 
-  const SUGGESTIONS = [
-    "Show all my campaigns and their budgets",
-    "Which campaign has the best ROAS last 30 days?",
-    "Show ad sets for my best campaign",
-    "Pause all underperforming campaigns",
-    "Create a new ad with an image",
-    "Create a text/link ad without an image",
-    "List my custom audiences",
-  ];
-
-  const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !loading && !authExpired;
+  const suggestions = metaCreds && googleCreds ? BOTH_SUGGESTIONS : metaCreds ? META_SUGGESTIONS : GOOGLE_SUGGESTIONS;
 
   return (
     <>
-      <style>{ANIMATION_STYLES}</style>
-      {showOauthPicker && (
-        <AdAccountPicker
-          accounts={oauthAccounts}
-          onSelect={handleOauthAccountPick}
-          onCancel={() => setShowOauthPicker(false)}
-        />
-      )}
-      <div className={"flex min-h-0 flex-col bg-background text-foreground " + (embedded ? "flex-1" : "h-[100svh]")}>
+      <style>{ANIM}</style>
+      <div className="flex h-[100svh] flex-col bg-zinc-950 text-zinc-100">
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/50 px-4 py-3 md:px-6">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#aaf345]">
-              <FacebookIcon size={14} color="white" />
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/60 bg-zinc-950 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_20px_rgba(66,133,244,0.3)]">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+              </svg>
             </div>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold leading-tight">Meta Ads AI</div>
-              <div className="truncate text-[11px] leading-tight text-muted-foreground">Conversational campaign manager</div>
+            <div>
+              <div className="text-sm font-bold leading-tight text-zinc-100">Ads Manager AI</div>
+              <div className="text-[10px] text-zinc-600 leading-tight">Meta + Google unified</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {phase === "chat" && selectedAccount ? (
-              <>
-                <Badge variant="secondary"
-                  className={`hidden gap-1.5 font-mono text-[10px] sm:flex ${authExpired ? "border-amber-500/30 bg-amber-500/10 text-amber-400" : ""}`}>
-                  <span className={`inline-block h-1.5 w-1.5 rounded-full ${authExpired ? "bg-amber-500" : "bg-green-500"}`} />
-                  {authExpired ? "Token expired" : selectedAccount.name}
-                </Badge>
-                <Button variant="ghost" size="sm" onClick={disconnect} className="text-xs text-muted-foreground hover:text-foreground">Disconnect</Button>
-              </>
-            ) : (
-              <Badge variant="outline" className="font-mono text-[10px]">NOT CONNECTED</Badge>
+            {metaCreds && (
+              <Badge className="hidden gap-1.5 border-[#1877f2]/30 bg-[#1877f2]/10 text-[#1877f2] text-[10px] sm:flex">
+                <MetaIcon size={8} mono /> {metaCreds.account.name}
+              </Badge>
+            )}
+            {googleCreds && (
+              <Badge className="hidden gap-1.5 border-[#4285F4]/30 bg-[#4285F4]/10 text-[#4285F4] text-[10px] sm:flex">
+                <GoogleAdsIcon size={8} /> {googleCreds.account.name}
+              </Badge>
+            )}
+            {!metaCreds && !googleCreds && (
+              <Badge variant="outline" className="border-zinc-700 text-[10px] text-zinc-600">NOT CONNECTED</Badge>
             )}
           </div>
         </div>
 
-        {phase === "chat" && authExpired && (
-          <TokenRefreshBanner
-            accountName={selectedAccount?.name ?? "your account"}
-            token={refreshToken} onTokenChange={setRefreshToken}
-            onSubmit={handleTokenRefresh} onFbRefresh={handleFbRefresh}
-            onDismiss={() => { setAuthExpired(false); setRefreshError(""); }}
-            loading={refreshLoading} error={refreshError}
-          />
-        )}
-
         <div className="flex min-h-0 flex-1">
-          {phase === "chat" && (
-            <Sidebar sessions={sessions} activeId={activeSessionId}
-              onSelect={loadSession} onNew={startNewChat}
-              onDelete={deleteSession} onRename={renameSession}
-              collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)}
-            />
-          )}
+          <Sidebar
+            sessions={sessions} activeId={activeSessionId}
+            onSelect={loadSession} onNew={startNewChat} onDelete={deleteSession}
+            metaCreds={metaCreds} googleCreds={googleCreds}
+            onConnectMeta={connectMeta} onConnectGoogle={connectGoogle}
+            onDisconnectMeta={disconnectMeta} onDisconnectGoogle={disconnectGoogle}
+            collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(v => !v)}
+          />
+
           <div className="flex min-h-0 flex-1 flex-col">
-            {phase === "connect" && <ConnectScreen onConnect={handleManualConnect} />}
-            {phase === "chat" && (
-              <>
-                <div className="min-h-0 flex-1 overflow-auto">
-                  {messages.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center gap-6 px-4 py-16 text-center">
-                      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#aaf345] shadow-[0_0_40px_rgba(24,119,242,0.25)]">
-                        <FacebookIcon size={26} color="white" />
+            <div className="min-h-0 flex-1 overflow-auto">
+              {messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-6 px-4 py-16 text-center">
+                  <div className="relative">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_60px_rgba(66,133,244,0.3)]">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                      </svg>
+                    </div>
+                    <div className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-zinc-950 border-2 border-zinc-800">
+                      <div className="flex h-4 w-4 items-center justify-center rounded-full bg-gradient-to-r from-[#1877f2] to-[#4285F4]">
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="white">
+                          <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
                       </div>
+                    </div>
+                  </div>
+
+                  {!isConnected ? (
+                    <div>
+                      <h2 className="text-lg font-bold text-zinc-200">Connect your ad platforms</h2>
+                      <p className="mt-1.5 max-w-xs text-sm text-zinc-500">Use the sidebar to connect Meta Ads and/or Google Ads, then start chatting.</p>
+                    </div>
+                  ) : (
+                    <>
                       <div>
-                        <h2 className="text-lg font-semibold">How can I help with your ads?</h2>
-                        <p className="mt-1.5 text-sm text-muted-foreground">
-                          Connected to <span className="font-medium text-foreground">{selectedAccount?.name}</span>
-                        </p>
+                        <h2 className="text-lg font-bold text-zinc-200">How can I help with your ads?</h2>
+                        <div className="mt-2 flex items-center justify-center gap-2">
+                          {metaCreds && <span className="flex items-center gap-1.5 rounded-full bg-[#1877f2]/10 px-3 py-1 text-[11px] font-semibold text-[#1877f2]"><MetaIcon size={10} mono /> {metaCreds.account.name}</span>}
+                          {metaCreds && googleCreds && <span className="text-zinc-700">+</span>}
+                          {googleCreds && <span className="flex items-center gap-1.5 rounded-full bg-[#4285F4]/10 px-3 py-1 text-[11px] font-semibold text-[#4285F4]"><GoogleAdsIcon size={10} /> {googleCreds.account.name}</span>}
+                        </div>
                       </div>
                       <div className="flex max-w-lg flex-wrap justify-center gap-2">
-                        {SUGGESTIONS.map((s) => (
-                          <button key={s} type="button"
-                            onClick={() => { setInput(s); inputRef.current?.focus(); }}
-                            className="rounded-full border border-border/60 bg-muted/30 px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-muted hover:text-foreground">
+                        {suggestions.map(s => (
+                          <button key={s} onClick={() => { setInput(s); inputRef.current?.focus(); }}
+                            className="rounded-full border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-400 transition-all hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200">
                             {s}
                           </button>
                         ))}
                       </div>
-                    </div>
-                  ) : (
-                    <div className="mx-auto w-full max-w-3xl divide-y divide-border/20">
-                      {messages.map((msg) =>
-                        msg.role === "user" ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />
-                      )}
-                      <div ref={bottomRef} />
-                    </div>
+                    </>
                   )}
                 </div>
-
-                <div className="shrink-0 border-t border-border/50 px-4 py-4 md:px-6" onDragOver={handleDragOver} onDrop={handleDrop}>
-                  <div className="mx-auto w-full max-w-3xl">
-                    {attachedImages.length > 0 && (
-                      <div className="mb-2 flex flex-wrap gap-2">
-                        {attachedImages.map((img, i) => (
-                          <ImagePill key={i} img={img} onRemove={() => removeImage(i)} />
-                        ))}
-                      </div>
-                    )}
-                    <div className="relative flex items-end rounded-xl border border-border/60 bg-muted/20 shadow-sm transition-colors focus-within:border-border focus-within:bg-background">
-                      <button type="button" onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image"
-                        className="mb-2 ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
-                        </svg>
-                      </button>
-                      <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple className="hidden" onChange={handleFileInputChange} />
-                      <Input
-                        ref={inputRef}
-                        placeholder={authExpired ? "Refresh your token above to continue…" : attachedImages.length > 0 ? "Describe how to use this image for an ad…" : "Message Meta Ads AI…"}
-                        value={input} onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKey} onPaste={handlePaste} disabled={loading}
-                        className="flex-1 border-0 bg-transparent px-3 py-3 text-sm shadow-none placeholder:text-muted-foreground/50 focus-visible:ring-0"
-                      />
-                      <button onClick={sendMessage} disabled={!canSend}
-                        className="mb-2 mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#aaf345] text-white shadow-sm transition-all hover:bg-[#1565d8] disabled:opacity-30">
-                        {loading ? (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                        ) : (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M22 2L11 13" /><path d="M22 2L15 22 11 13 2 9l20-7z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="mt-2 text-center text-[11px] text-muted-foreground/50">
-                      Actions are executed immediately · Image ads: attach JPG/PNG/GIF/WebP (max 4 MB) · Text/link ads: no image needed
-                    </p>
-                  </div>
+              ) : (
+                <div className="mx-auto w-full max-w-3xl divide-y divide-zinc-800/40">
+                  {messages.map(msg => msg.role === "user" ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />)}
+                  <div ref={bottomRef} />
                 </div>
-              </>
-            )}
+              )}
+            </div>
+
+            {/* Input area */}
+            <div className="shrink-0 border-t border-zinc-800/60 bg-zinc-950 px-4 py-4" onDragOver={e => e.preventDefault()} onDrop={handleDrop}>
+              <div className="mx-auto w-full max-w-3xl">
+                {attachedImages.length > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-2">
+                    {attachedImages.map((img, i) => <ImagePill key={i} img={img} onRemove={() => setAttachedImages(prev => prev.filter((_, idx) => idx !== i))} />)}
+                  </div>
+                )}
+                <div className="flex items-end rounded-xl border border-zinc-800 bg-zinc-900/80 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] backdrop-blur-sm transition-colors focus-within:border-zinc-700">
+                  {/* Image attach (Meta only when connected) */}
+                  {metaCreds && (
+                    <button onClick={() => fileInputRef.current?.click()} disabled={loading} title="Attach image (Meta ad)"
+                      className="mb-2 ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-600 transition-colors hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
+                      </svg>
+                    </button>
+                  )}
+                  <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { if (e.target.files?.length) handleImageFiles(e.target.files); e.target.value = ""; }} />
+                  <Input
+                    ref={inputRef}
+                    placeholder={!isConnected ? "Connect a platform in the sidebar first…" : loading ? "Thinking…" : metaCreds && googleCreds ? "Ask about Meta + Google Ads, compare platforms, manage campaigns…" : metaCreds ? "Ask about Meta Ads campaigns, ad sets, ads…" : "Ask about Google Ads campaigns, keywords, metrics…"}
+                    value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKey} onPaste={handlePaste}
+                    disabled={loading || !isConnected}
+                    className="flex-1 border-0 bg-transparent px-4 py-3 text-sm text-zinc-200 shadow-none placeholder:text-zinc-700 focus-visible:ring-0"
+                  />
+                  <button onClick={sendMessage} disabled={!input.trim() && attachedImages.length === 0 || loading || !isConnected}
+                    className="mb-2 mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#1877f2] to-[#4285F4] text-white shadow-sm transition-all hover:shadow-[0_0_12px_rgba(66,133,244,0.5)] disabled:opacity-30">
+                    {loading
+                      ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                      : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13" /><path d="M22 2L15 22 11 13 2 9l20-7z" /></svg>
+                    }
+                  </button>
+                </div>
+                <p className="mt-2 text-center text-[10px] text-zinc-700">
+                  {metaCreds && googleCreds ? "Both platforms connected · " : ""}
+                  Actions execute immediately · Meta budgets in cents · Google budgets in micros
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1412,10 +901,10 @@ function MetaAdsChatInner({ embedded = false }: { embedded?: boolean }) {
   );
 }
 
-export function MetaAdsChat({ embedded = false }: { embedded?: boolean }) {
-  return <Suspense><MetaAdsChatInner embedded={embedded} /></Suspense>;
+export function UnifiedAdsChat() {
+  return <Suspense><UnifiedAdsChatInner /></Suspense>;
 }
 
-export default function MetaAdsChatPage() {
-  return <MetaAdsChat />;
+export default function UnifiedAdsChatPage() {
+  return <UnifiedAdsChat />;
 }
