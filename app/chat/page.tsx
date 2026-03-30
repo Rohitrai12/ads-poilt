@@ -11,6 +11,9 @@ import {
   type MetaSelection,
 } from "@/components/MetaAccountPicker";
 
+// ─── Rate limit config ────────────────────────────────────────────────────────
+const COOLDOWN_SECONDS = 10; // seconds between messages
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 type StepType = "text" | "tool_call" | "tool_result" | "error" | "done";
 type Platform = "meta" | "google";
@@ -48,7 +51,6 @@ type ChatSession = {
   updatedAt: number;
 };
 
-// Meta account as returned by Graph API ad accounts endpoint
 type MetaAccount = {
   id: string;
   name: string;
@@ -63,7 +65,6 @@ type GoogleAccount = {
   is_manager: boolean;
 };
 
-// Full Meta credentials including page + pixel
 type MetaCreds = {
   accessToken: string;
   adAccountId: string;
@@ -78,7 +79,6 @@ type GoogleCreds = {
   account: GoogleAccount;
 } | null;
 
-// Pending picker data after OAuth redirect
 type MetaPending = {
   accessToken: string;
   adAccounts: MetaAdAccount[];
@@ -205,6 +205,51 @@ function PlatformBadge({ platform }: { platform: Platform }) {
     <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-[#4285F4]/15 text-[#4285F4]">
       <GoogleAdsIcon size={8} /> GOOGLE
     </span>
+  );
+}
+
+// ─── Countdown ring component ─────────────────────────────────────────────────
+function CountdownRing({ seconds, total }: { seconds: number; total: number }) {
+  const radius = 10;
+  const circumference = 2 * Math.PI * radius;
+  const progress = seconds / total;
+  const dashOffset = circumference * (1 - progress);
+
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: 28, height: 28 }}>
+      <svg width="28" height="28" viewBox="0 0 28 28" className="-rotate-90">
+        {/* Track */}
+        <circle
+          cx="14" cy="14" r={radius}
+          fill="none"
+          stroke="rgba(255,255,255,0.08)"
+          strokeWidth="2.5"
+        />
+        {/* Progress */}
+        <circle
+          cx="14" cy="14" r={radius}
+          fill="none"
+          stroke="url(#cooldownGrad)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          style={{ transition: "stroke-dashoffset 1s linear" }}
+        />
+        <defs>
+          <linearGradient id="cooldownGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#1877f2" />
+            <stop offset="100%" stopColor="#4285F4" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <span
+        className="absolute text-[9px] font-bold tabular-nums"
+        style={{ color: "#4285F4" }}
+      >
+        {seconds}
+      </span>
+    </div>
   );
 }
 
@@ -537,7 +582,6 @@ function ConnectionPanel({
 
   return (
     <div className="space-y-4">
-
       {/* ── Meta ──────────────────────────────────────────────────────────── */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
         <div className="mb-3 flex items-center justify-between">
@@ -844,6 +888,7 @@ const ANIM = `
 @keyframes fadeIn  { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
 @keyframes bounce  { 0%,80%,100%{transform:scale(.6);opacity:.4} 40%{transform:scale(1);opacity:1} }
 @keyframes blink   { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes cooldownPulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
 `;
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -857,14 +902,43 @@ function UnifiedAdsChatInner() {
 
   const [metaCreds,  setMetaCreds]  = useState<MetaCreds>(null);
   const [googleCreds,setGoogleCreds]= useState<GoogleCreds>(null);
-
-  // Pending picker state — populated after OAuth redirect
   const [metaPending, setMetaPending] = useState<MetaPending>(null);
 
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+
+  // ── Rate limit state ───────────────────────────────────────────────────────
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
+  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSentAtRef    = useRef<number>(0);
+
+  const startCooldown = useCallback(() => {
+    setCooldownRemaining(COOLDOWN_SECONDS);
+    lastSentAtRef.current = Date.now();
+
+    if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
+    cooldownTimerRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - lastSentAtRef.current) / 1000);
+      const remaining = Math.max(0, COOLDOWN_SECONDS - elapsed);
+      setCooldownRemaining(remaining);
+      if (remaining === 0) {
+        clearInterval(cooldownTimerRef.current!);
+        cooldownTimerRef.current = null;
+      }
+    }, 250); // tick 4x/sec for smooth ring animation
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
+    };
+  }, []);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef    = useRef<HTMLDivElement>(null);
   const inputRef     = useRef<HTMLInputElement>(null);
+
+  const isCoolingDown = cooldownRemaining > 0;
 
   // ── Load sessions ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -878,7 +952,6 @@ function UnifiedAdsChatInner() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // Restore persisted credentials
     try {
       const m = localStorage.getItem(LS_META_AUTH);
       if (m) setMetaCreds(JSON.parse(m));
@@ -888,10 +961,8 @@ function UnifiedAdsChatInner() {
       if (g) setGoogleCreds(JSON.parse(g));
     } catch { /**/ }
 
-    // ── Handle OAuth redirects ────────────────────────────────────────────
     const params = new URLSearchParams(window.location.search);
 
-    // Meta — new picker flow
     const fbPending = params.get("fb_pending_selection");
     const fbDataRaw = params.get("fb_data");
     if (fbPending === "1" && fbDataRaw) {
@@ -901,7 +972,6 @@ function UnifiedAdsChatInner() {
       } catch { /**/ }
     }
 
-    // Google
     const gToken    = params.get("g_token");
     const gAccounts = params.get("g_accounts");
     if (gToken) {
@@ -915,11 +985,7 @@ function UnifiedAdsChatInner() {
       } catch { /**/ }
     }
 
-    // Clean URL
-    if (
-      fbPending || gToken ||
-      params.get("fb_error") || params.get("g_error")
-    ) {
+    if (fbPending || gToken || params.get("fb_error") || params.get("g_error")) {
       const clean = new URL(window.location.href);
       ["fb_pending_selection", "fb_data", "fb_error", "g_token", "g_accounts", "g_error"]
         .forEach(k => clean.searchParams.delete(k));
@@ -936,7 +1002,6 @@ function UnifiedAdsChatInner() {
   }, [messages]);
 
   // ── Auth callbacks ─────────────────────────────────────────────────────────
-  // Called by ConnectionPanel manual form (no page/pixel)
   const connectMetaManual = useCallback((
     token: string, accountId: string, account: MetaAccount
   ) => {
@@ -948,7 +1013,6 @@ function UnifiedAdsChatInner() {
     try { localStorage.setItem(LS_META_AUTH, JSON.stringify(creds)); } catch { /**/ }
   }, []);
 
-  // Called by MetaAccountPicker after OAuth
   const handleMetaPickerConfirm = useCallback((selection: MetaSelection) => {
     const id = selection.adAccount.id.replace(/^act_/, "");
     const creds: NonNullable<MetaCreds> = {
@@ -1034,7 +1098,7 @@ function UnifiedAdsChatInner() {
   const sendMessage = useCallback(async () => {
     const hasText   = input.trim().length > 0;
     const hasImages = attachedImages.length > 0;
-    if ((!hasText && !hasImages) || loading || !isConnected) return;
+    if ((!hasText && !hasImages) || loading || !isConnected || isCoolingDown) return;
 
     let richContent = input.trim();
     if (hasImages && !hasText) {
@@ -1064,6 +1128,9 @@ function UnifiedAdsChatInner() {
     const newMessages = [...messages, userMsg, assistantMsg];
     setMessages(newMessages);
     setInput(""); setAttachedImages([]); setLoading(true);
+
+    // ── Start cooldown immediately on send ─────────────────────────────────
+    startCooldown();
 
     const sessionId = activeSessionId ?? uid();
     if (!activeSessionId) {
@@ -1145,13 +1212,16 @@ function UnifiedAdsChatInner() {
       setLoading(false);
       inputRef.current?.focus();
     }
-  }, [input, attachedImages, loading, isConnected, messages, activeSessionId, metaCreds, googleCreds]);
+  }, [input, attachedImages, loading, isConnected, isCoolingDown, messages, activeSessionId, metaCreds, googleCreds, startCooldown]);
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
   const suggestions = metaCreds && googleCreds ? BOTH_SUGGESTIONS : metaCreds ? META_SUGGESTIONS : GOOGLE_SUGGESTIONS;
+
+  // Derive send button disabled state
+  const sendDisabled = (!input.trim() && attachedImages.length === 0) || loading || !isConnected || isCoolingDown;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -1296,11 +1366,34 @@ function UnifiedAdsChatInner() {
                     ))}
                   </div>
                 )}
-                <div className="flex items-end rounded-xl border border-zinc-800 bg-zinc-900/80 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] backdrop-blur-sm transition-colors focus-within:border-zinc-700">
+
+                {/* Cooldown banner */}
+                {isCoolingDown && !loading && (
+                  <div
+                    className="mb-2 flex items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-2"
+                    style={{ animation: "fadeIn 0.2s ease-out" }}
+                  >
+                    <CountdownRing seconds={cooldownRemaining} total={COOLDOWN_SECONDS} />
+                    <div className="flex flex-col">
+                      <span className="text-[11px] font-semibold text-zinc-300">
+                        Next message in {cooldownRemaining}s
+                      </span>
+                      <span className="text-[10px] text-zinc-600">
+                        Cooldown prevents accidental rapid requests
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div className={`flex items-end rounded-xl border bg-zinc-900/80 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] backdrop-blur-sm transition-colors ${
+                  isCoolingDown && !loading
+                    ? "border-zinc-700/80 opacity-75"
+                    : "border-zinc-800 focus-within:border-zinc-700"
+                }`}>
                   {metaCreds && (
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={loading}
+                      disabled={loading || isCoolingDown}
                       title="Attach image (Meta ad)"
                       className="mb-2 ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-600 transition-colors hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30"
                     >
@@ -1322,11 +1415,12 @@ function UnifiedAdsChatInner() {
                   <Input
                     ref={inputRef}
                     placeholder={
-                      !isConnected ? "Connect a platform in the sidebar first…" :
-                      loading      ? "Thinking…" :
+                      isCoolingDown && !loading ? `Wait ${cooldownRemaining}s before sending next message…` :
+                      !isConnected             ? "Connect a platform in the sidebar first…" :
+                      loading                  ? "Thinking…" :
                       metaCreds && googleCreds ? "Ask about Meta + Google Ads, compare platforms, manage campaigns…" :
-                      metaCreds  ? "Ask about Meta Ads campaigns, ad sets, ads…" :
-                                   "Ask about Google Ads campaigns, keywords, metrics…"
+                      metaCreds                ? "Ask about Meta Ads campaigns, ad sets, ads…" :
+                                                 "Ask about Google Ads campaigns, keywords, metrics…"
                     }
                     value={input}
                     onChange={e => setInput(e.target.value)}
@@ -1337,12 +1431,19 @@ function UnifiedAdsChatInner() {
                   />
                   <button
                     onClick={sendMessage}
-                    disabled={(!input.trim() && attachedImages.length === 0) || loading || !isConnected}
+                    disabled={sendDisabled}
                     className="mb-2 mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#1877f2] to-[#4285F4] text-white shadow-sm transition-all hover:shadow-[0_0_12px_rgba(66,133,244,0.5)] disabled:opacity-30"
+                    title={isCoolingDown ? `Wait ${cooldownRemaining}s` : "Send message"}
                   >
                     {loading ? (
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
                         <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                      </svg>
+                    ) : isCoolingDown ? (
+                      // Show a small static lock/pause icon during cooldown
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                       </svg>
                     ) : (
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1355,6 +1456,9 @@ function UnifiedAdsChatInner() {
                 <p className="mt-2 text-center text-[10px] text-zinc-700">
                   {metaCreds && googleCreds ? "Both platforms connected · " : ""}
                   Actions execute immediately · Meta budgets in cents · Google budgets in micros
+                  {isCoolingDown && !loading && (
+                    <span className="ml-1 text-zinc-600">· Cooldown active</span>
+                  )}
                 </p>
               </div>
             </div>
@@ -1362,7 +1466,7 @@ function UnifiedAdsChatInner() {
         </div>
       </div>
 
-      {/* Meta Account Picker modal — shown after OAuth redirect */}
+      {/* Meta Account Picker modal */}
       {metaPending && (
         <MetaAccountPicker
           accessToken={metaPending.accessToken}
