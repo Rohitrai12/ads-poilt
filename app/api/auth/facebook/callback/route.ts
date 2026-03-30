@@ -1,3 +1,4 @@
+// app/api/auth/facebook/callback/route.ts
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
@@ -9,7 +10,9 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get("error");
 
   if (error || !code) {
-    return NextResponse.redirect(`${origin}/dashboard/chat?fb_error=${error ?? "cancelled"}`);
+    return NextResponse.redirect(
+      `${origin}/dashboard/chat?fb_error=${error ?? "cancelled"}`
+    );
   }
 
   const appId = process.env.FACEBOOK_APP_ID;
@@ -20,21 +23,28 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${origin}/dashboard/chat?fb_error=missing_env`);
   }
 
-  // Exchange code for short-lived token
+  // ── 1. Exchange code → short-lived token ─────────────────────────────────
   const tokenRes = await fetch(
     `https://graph.facebook.com/${META_VERSION}/oauth/access_token?` +
-      new URLSearchParams({ client_id: appId, client_secret: appSecret, redirect_uri: redirectUri, code })
+      new URLSearchParams({
+        client_id: appId,
+        client_secret: appSecret,
+        redirect_uri: redirectUri,
+        code,
+      })
   );
   const tokenData = await tokenRes.json();
 
   if (tokenData.error || !tokenData.access_token) {
     const msg = tokenData.error?.message ?? "token_exchange_failed";
-    return NextResponse.redirect(`${origin}/dashboard/chat?fb_error=${encodeURIComponent(msg)}`);
+    return NextResponse.redirect(
+      `${origin}/dashboard/chat?fb_error=${encodeURIComponent(msg)}`
+    );
   }
 
   const shortToken = tokenData.access_token;
 
-  // Exchange for long-lived token (60 days)
+  // ── 2. Exchange → long-lived token (60 days) ──────────────────────────────
   const longRes = await fetch(
     `https://graph.facebook.com/${META_VERSION}/oauth/access_token?` +
       new URLSearchParams({
@@ -47,27 +57,79 @@ export async function GET(request: NextRequest) {
   const longData = await longRes.json();
   const accessToken = longData.access_token ?? shortToken;
 
-  // Fetch ad accounts the user has access to
-  const acctRes = await fetch(
-    `https://graph.facebook.com/${META_VERSION}/me/adaccounts?fields=id,name,account_status,currency,timezone_name&access_token=${accessToken}`
-  );
-  const acctData = await acctRes.json();
-  const accounts = acctData.data ?? [];
+  // ── 3. Fetch ALL resources in parallel ───────────────────────────────────
+  const [acctRes, pagesRes] = await Promise.all([
+    // Ad accounts — include owner info to help user identify them
+    fetch(
+      `https://graph.facebook.com/${META_VERSION}/me/adaccounts` +
+        `?fields=id,name,account_status,currency,timezone_name,business` +
+        `&limit=50&access_token=${accessToken}`
+    ),
+    // Facebook Pages the user manages
+    fetch(
+      `https://graph.facebook.com/${META_VERSION}/me/accounts` +
+        `?fields=id,name,category,picture` +
+        `&limit=50&access_token=${accessToken}`
+    ),
+  ]);
 
-  // Pass token + accounts back to the app via URL params
-  // and also persist in a cookie so we don't ask again next time.
-  const params = new URLSearchParams({
-    fb_token: accessToken,
-    fb_accounts: JSON.stringify(accounts),
+  const [acctData, pagesData] = await Promise.all([
+    acctRes.json(),
+    pagesRes.json(),
+  ]);
+
+  const adAccounts = acctData.data ?? [];
+  const pages = pagesData.data ?? [];
+
+  // ── 4. For each page, fetch its associated Pixel(s) ──────────────────────
+  // Pixels are tied to the ad account, not the page — fetch from ad accounts
+  // We batch-fetch pixels for all active ad accounts
+  const pixelPromises = adAccounts
+    .filter((a: { account_status: number }) => a.account_status === 1)
+    .slice(0, 10) // cap at 10 accounts to avoid rate limits
+    .map(async (account: { id: string }) => {
+      const pixelRes = await fetch(
+        `https://graph.facebook.com/${META_VERSION}/${account.id}/adspixels` +
+          `?fields=id,name,creation_time,last_fired_time` +
+          `&access_token=${accessToken}`
+      );
+      const pixelData = await pixelRes.json();
+      return (pixelData.data ?? []).map((p: object) => ({
+        ...p,
+        ad_account_id: account.id,
+      }));
+    });
+
+  const pixelArrays = await Promise.allSettled(pixelPromises);
+  const pixels = pixelArrays
+    .filter(
+      (r): r is PromiseFulfilledResult<object[]> => r.status === "fulfilled"
+    )
+    .flatMap((r) => r.value);
+
+  // ── 5. Redirect with all data — user picks in the UI ─────────────────────
+  // NOTE: We intentionally do NOT auto-select an account here.
+  // The frontend will show a picker modal when fb_pending_selection=1.
+  const payload = JSON.stringify({
+    accessToken,
+    adAccounts,
+    pages,
+    pixels,
   });
 
+  const params = new URLSearchParams({
+    fb_pending_selection: "1",
+    fb_data: encodeURIComponent(payload),
+  });
+
+  // Store full payload in a short-lived cookie (picker reads it, then clears it)
   const response = NextResponse.redirect(`${origin}/dashboard/chat?${params}`);
-  response.cookies.set("meta_ads_auth", JSON.stringify({ accessToken, accounts }), {
+  response.cookies.set("meta_ads_pending", payload, {
     httpOnly: false,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30, // 30 days
+    maxAge: 60 * 10, // 10 minutes — just long enough to pick an account
   });
 
   return response;
