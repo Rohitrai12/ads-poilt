@@ -50,9 +50,23 @@ BEHAVIORAL RULES:
 17. META AD SET CREATION: Before calling meta_create_adset, ALWAYS collect from the user:
     (a) Destination/conversion location (destination_type) — ask "Where should the ad send people? Website, App, Messenger, Instagram Direct, WhatsApp, or Facebook Page?"
     (b) Interests — ask "Do you want to target specific interests? If so, tell me the keywords and I will search for matching interest categories."
-    (c) Bid cap — ask "Do you want to set a manual bid cap, or use lowest-cost automatic bidding?" Only set bid_amount_cents if the user explicitly provides a bid cap amount. NEVER add a bid cap automatically.
+    (c) Bid cap — ask "Do you want to set a manual bid cap, or use lowest-cost automatic bidding?" Only set bid_amount_cents if the user explicitly provides a bid cap amount. NEVER add a bid cap automatically. Default to LOWEST_COST_WITHOUT_CAP (no bid_amount_cents needed).
     Never assume or auto-fill these values. Always ask explicitly before creating.
-18. META INTERESTS: When a user mentions interest targeting keywords, call meta_search_interests with those keywords, present the results to the user, confirm which interests to add, then pass the confirmed interest objects into meta_create_adset. Never skip the confirmation step.`;
+18. META INTERESTS: When a user mentions interest targeting keywords, call meta_search_interests with those keywords, present the results to the user, confirm which interests to add, then pass the confirmed interest objects into meta_create_adset. Never skip the confirmation step.
+19. META OPTIMIZATION GOAL MAPPING — always use the correct API value for the campaign objective:
+    - OUTCOME_SALES → optimization_goal: OFFSITE_CONVERSIONS (or VALUE to maximize purchase value)
+    - OUTCOME_TRAFFIC → optimization_goal: LINK_CLICKS or LANDING_PAGE_VIEWS
+    - OUTCOME_LEADS → optimization_goal: LEAD_GENERATION or QUALITY_LEAD
+    - OUTCOME_AWARENESS → optimization_goal: REACH or IMPRESSIONS or AD_RECALL_LIFT
+    - OUTCOME_ENGAGEMENT → optimization_goal: POST_ENGAGEMENT or PAGE_LIKES or CONVERSATIONS
+    - OUTCOME_APP_PROMOTION → optimization_goal: APP_INSTALLS or APP_INSTALLS_AND_OFFSITE_CONVERSIONS
+    NEVER use "CONVERSIONS" — the correct API value is "OFFSITE_CONVERSIONS".
+20. META BID STRATEGY RULES:
+    - Default (no bid cap): set bid_strategy = LOWEST_COST_WITHOUT_CAP, omit bid_amount_cents entirely.
+    - If user requests a bid cap: set bid_strategy = LOWEST_COST_WITH_BID_CAP and bid_amount_cents = the amount.
+    - If user requests target cost: set bid_strategy = COST_CAP and bid_amount_cents = the target.
+    - NEVER set bid_strategy to a capped type without also providing bid_amount_cents — Meta will reject it.
+    - NEVER set bid_amount_cents without a matching capped bid_strategy.`;
 
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
@@ -201,23 +215,46 @@ const META_TOOLS = [
         },
         optimization_goal: {
           type: "string",
+          // These are the EXACT values Meta's API accepts as of v25.0.
+          // Common mappings: "conversions" → OFFSITE_CONVERSIONS, "app installs" → APP_INSTALLS,
+          // "reach" → REACH, "traffic/clicks" → LINK_CLICKS or LANDING_PAGE_VIEWS,
+          // "leads" → LEAD_GENERATION, "video views" → THRUPLAY, "purchase value" → VALUE.
+          // For OUTCOME_SALES campaigns use OFFSITE_CONVERSIONS or VALUE.
           enum: [
+            "OFFSITE_CONVERSIONS",
             "LINK_CLICKS",
+            "LANDING_PAGE_VIEWS",
             "IMPRESSIONS",
             "REACH",
             "LEAD_GENERATION",
-            "CONVERSIONS",
+            "QUALITY_LEAD",
             "APP_INSTALLS",
-            "LANDING_PAGE_VIEWS",
+            "APP_INSTALLS_AND_OFFSITE_CONVERSIONS",
             "VALUE",
             "THRUPLAY",
+            "POST_ENGAGEMENT",
+            "PAGE_LIKES",
+            "EVENT_RESPONSES",
+            "CONVERSATIONS",
+            "MESSAGING_PURCHASE_CONVERSION",
+            "MESSAGING_APPOINTMENT_CONVERSION",
+            "ENGAGED_USERS",
+            "AD_RECALL_LIFT",
           ],
+          description:
+            "Meta API optimization goal. For OUTCOME_SALES → use OFFSITE_CONVERSIONS or VALUE. For OUTCOME_TRAFFIC → use LINK_CLICKS or LANDING_PAGE_VIEWS. For OUTCOME_LEADS → use LEAD_GENERATION. For OUTCOME_AWARENESS → use REACH or IMPRESSIONS. For OUTCOME_ENGAGEMENT → use POST_ENGAGEMENT or PAGE_LIKES.",
         },
         billing_event: { type: "string", enum: ["IMPRESSIONS", "LINK_CLICKS"] },
+        bid_strategy: {
+          type: "string",
+          enum: ["LOWEST_COST_WITHOUT_CAP", "LOWEST_COST_WITH_BID_CAP", "COST_CAP"],
+          description:
+            "Bidding strategy. Default is LOWEST_COST_WITHOUT_CAP (automatic, no bid cap needed). Only use LOWEST_COST_WITH_BID_CAP or COST_CAP if the user explicitly requests a manual bid cap — and you MUST then also provide bid_amount_cents. NEVER set a capped strategy without a user-provided amount.",
+        },
         bid_amount_cents: {
           type: "number",
           description:
-            "Manual bid cap in cents. ONLY set this if the user explicitly requested a bid cap and provided the amount. Never add automatically.",
+            "Manual bid cap in cents. ONLY set this if the user explicitly requested a bid cap AND provided the amount. Required when bid_strategy is LOWEST_COST_WITH_BID_CAP or COST_CAP. Never add automatically.",
         },
       },
       required: ["campaign_id", "name", "targeting_countries", "optimization_goal", "billing_event", "destination_type"],
@@ -716,7 +753,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return safeParseJSON(await res.text());
     }
 
-    // ── FIX #2 + #3 + #4: destination_type, interests, explicit bid cap ─────
+    // ── destination_type, interests, bid_strategy, correct optimization_goal ──
     if (name === "meta_create_adset") {
       const {
         campaign_id,
@@ -729,6 +766,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         interests,
         optimization_goal,
         billing_event,
+        bid_strategy,
         bid_amount_cents,
       } = input as {
         campaign_id: string;
@@ -741,8 +779,16 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         interests?: Array<{ id: string; name: string }>;
         optimization_goal: string;
         billing_event: string;
+        bid_strategy?: string;
         bid_amount_cents?: number;
       };
+
+      // Server-side remap: correct any hallucinated optimization_goal values
+      const GOAL_REMAP: Record<string, string> = {
+        CONVERSIONS: "OFFSITE_CONVERSIONS",
+        APP_INSTALLS: "APP_INSTALLS",
+      };
+      const effectiveGoal = GOAL_REMAP[optimization_goal] ?? optimization_goal;
 
       const targeting: Record<string, unknown> = {
         geo_locations: { countries: targeting_countries },
@@ -759,7 +805,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       }
 
       const effectiveBilling =
-        optimization_goal === "LINK_CLICKS" && billing_event === "LINK_CLICKS"
+        effectiveGoal === "LINK_CLICKS" && billing_event === "LINK_CLICKS"
           ? "IMPRESSIONS"
           : billing_event;
 
@@ -767,17 +813,27 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         campaign_id: String(campaign_id),
         name: n,
         targeting: JSON.stringify(targeting),
-        optimization_goal,
+        optimization_goal: effectiveGoal,
         billing_event: effectiveBilling,
         status: "PAUSED",
         access_token: tok,
       });
 
-      // Add destination_type if provided
       if (destination_type) p.set("destination_type", destination_type);
       if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
-      // Only add bid cap if explicitly provided by user
-      if (bid_amount_cents) p.set("bid_amount", String(Math.round(bid_amount_cents)));
+
+      // Bid strategy handling:
+      // - Default (omit both fields) = Meta uses LOWEST_COST_WITHOUT_CAP automatically
+      // - Capped strategies REQUIRE bid_amount — only set if user explicitly provided both
+      // - If AI sends a capped strategy without a bid amount, silently fall back to default
+      const cappedStrategies = ["LOWEST_COST_WITH_BID_CAP", "COST_CAP"];
+      if (bid_strategy === "LOWEST_COST_WITHOUT_CAP") {
+        p.set("bid_strategy", "LOWEST_COST_WITHOUT_CAP");
+      } else if (bid_strategy && cappedStrategies.includes(bid_strategy) && bid_amount_cents) {
+        p.set("bid_strategy", bid_strategy);
+        p.set("bid_amount", String(Math.round(bid_amount_cents)));
+      }
+      // else: no bid fields → Meta defaults to lowest-cost (safe)
 
       const result = (await metaPost(
         `${META_BASE}/${acct}/adsets`,
@@ -795,13 +851,17 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
             campaign_id: String(campaign_id),
             name: n,
             targeting: JSON.stringify(targeting),
-            optimization_goal,
+            optimization_goal: effectiveGoal,
             billing_event: effectiveBilling,
             status: "PAUSED",
             access_token: tok,
           });
           if (destination_type) p2.set("destination_type", destination_type);
-          if (bid_amount_cents) p2.set("bid_amount", String(Math.round(bid_amount_cents)));
+          if (bid_strategy === "LOWEST_COST_WITHOUT_CAP") p2.set("bid_strategy", "LOWEST_COST_WITHOUT_CAP");
+          if (bid_strategy && cappedStrategies.includes(bid_strategy) && bid_amount_cents) {
+            p2.set("bid_strategy", bid_strategy);
+            p2.set("bid_amount", String(Math.round(bid_amount_cents)));
+          }
           const r2 = (await metaPost(`${META_BASE}/${acct}/adsets`, p2)) as Record<string, unknown>;
           if (r2?.id)
             return { ...r2, auto_fixed: true, note: "CBO campaign — budget managed at campaign level." };
