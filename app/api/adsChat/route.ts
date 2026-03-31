@@ -11,6 +11,8 @@ const META_BASE = `https://graph.facebook.com/${META_VERSION}`;
 const GOOGLE_ADS_VERSION = "v18";
 const GOOGLE_ADS_BASE = `https://googleads.googleapis.com/${GOOGLE_ADS_VERSION}`;
 
+const AUTO_BID_CAP_CENTS = 500; // default dummy/test bid cap in cents
+
 // ─── BigInt-safe JSON ─────────────────────────────────────────────────────────
 function safeParseJSON(text: string): unknown {
   const safe = text.replace(/:(\s*)(-?\d{16,})([,\}\]])/g, (_m, sp, n, tail) => `:"${n}"${tail}`);
@@ -47,11 +49,11 @@ BEHAVIORAL RULES:
 14. After any create operation, always confirm the ID/resource name so users know where to find it.
 15. When the user says "my campaigns" without specifying a platform, query BOTH if connected.
 16. META CAMPAIGN CREATION: Always pass use_cbo. Set use_cbo=true when providing a campaign-level daily_budget_cents (CBO). Set use_cbo=false when budgets will be managed per ad set. This is required by the Meta API.
-17. META AD SET CREATION: Before calling meta_create_adset, ALWAYS collect from the user:
-    (a) Destination/conversion location (destination_type) — ask "Where should the ad send people? Website, App, Messenger, Instagram Direct, WhatsApp, or Facebook Page?"
+17. META AD SET CREATION: Before calling meta_create_adset, collect the needed inputs from the user when they are real campaign settings. For dummy/test setups, you may auto-fill safe defaults.
+    (a) Destination/conversion location (destination_type) — ask "Where should the ad send people? Website, App, Messenger, Instagram Direct, WhatsApp, or Facebook Page?" Use WEBSITE as the dummy default only for test flows.
     (b) Interests — ask "Do you want to target specific interests? If so, tell me the keywords and I will search for matching interest categories."
-    (c) Bid cap — ask "Do you want to set a manual bid cap, or use lowest-cost automatic bidding?" Only set bid_amount_cents if the user explicitly provides a bid cap amount. NEVER add a bid cap automatically. Default to LOWEST_COST_WITHOUT_CAP (no bid_amount_cents needed).
-    Never assume or auto-fill these values. Always ask explicitly before creating.
+    (c) Bid cap — if the user does not provide one for a dummy/test setup, auto-add a small default bid cap. If the user explicitly asks for no cap, use lowest-cost automatic bidding instead.
+    Never guess real campaign settings; only auto-fill defaults for dummy/test flows.
 18. META INTERESTS: When a user mentions interest targeting keywords, call meta_search_interests with those keywords, present the results to the user, confirm which interests to add, then pass the confirmed interest objects into meta_create_adset. Never skip the confirmation step.
 19. META OPTIMIZATION GOAL MAPPING — always use the correct API value for the campaign objective:
     - OUTCOME_SALES → optimization_goal: OFFSITE_CONVERSIONS (or VALUE to maximize purchase value)
@@ -62,10 +64,11 @@ BEHAVIORAL RULES:
     - OUTCOME_APP_PROMOTION → optimization_goal: APP_INSTALLS or APP_INSTALLS_AND_OFFSITE_CONVERSIONS
     NEVER use "CONVERSIONS" — the correct API value is "OFFSITE_CONVERSIONS".
 20. META BID STRATEGY RULES:
-    - Default (no bid cap): set bid_strategy = LOWEST_COST_WITHOUT_CAP, omit bid_amount_cents entirely.
+    - Default for real campaigns with no cap: set bid_strategy = LOWEST_COST_WITHOUT_CAP and omit bid_amount_cents.
+    - For dummy/test ad sets when no cap is supplied: auto-add a small cap using LOWEST_COST_WITH_BID_CAP and bid_amount_cents = 500.
     - If user requests a bid cap: set bid_strategy = LOWEST_COST_WITH_BID_CAP and bid_amount_cents = the amount.
     - If user requests target cost: set bid_strategy = COST_CAP and bid_amount_cents = the target.
-    - NEVER set bid_strategy to a capped type without also providing bid_amount_cents — Meta will reject it.
+    - NEVER set bid_strategy to a capped type without also providing bid_amount_cents.
     - NEVER set bid_amount_cents without a matching capped bid_strategy.`;
 
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
@@ -172,7 +175,7 @@ const META_TOOLS = [
   {
     name: "meta_create_adset",
     description:
-      "Create a Meta ad set. ALWAYS collect destination_type, interests, and bid cap preference from the user BEFORE calling this tool. For CBO campaigns, omit daily_budget_cents. Only set bid_amount_cents if the user explicitly provided a bid cap amount — never add it automatically.",
+      "Create a Meta ad set. For real campaigns, collect destination_type, interests, and bid cap preference. For dummy/test setups, the backend can auto-fill a default bid cap. For CBO campaigns, omit daily_budget_cents.",
     input_schema: {
       type: "object",
       properties: {
@@ -249,12 +252,12 @@ const META_TOOLS = [
           type: "string",
           enum: ["LOWEST_COST_WITHOUT_CAP", "LOWEST_COST_WITH_BID_CAP", "COST_CAP"],
           description:
-            "Bidding strategy. Default is LOWEST_COST_WITHOUT_CAP (automatic, no bid cap needed). Only use LOWEST_COST_WITH_BID_CAP or COST_CAP if the user explicitly requests a manual bid cap — and you MUST then also provide bid_amount_cents. NEVER set a capped strategy without a user-provided amount.",
+            "Bidding strategy. Real campaigns can use LOWEST_COST_WITHOUT_CAP. Dummy/test setups may omit bid_strategy and the backend will auto-apply LOWEST_COST_WITH_BID_CAP with a default bid cap. If the user explicitly requests a manual bid cap, use LOWEST_COST_WITH_BID_CAP or COST_CAP and provide bid_amount_cents.",
         },
         bid_amount_cents: {
           type: "number",
           description:
-            "Manual bid cap in cents. ONLY set this if the user explicitly requested a bid cap AND provided the amount. Required when bid_strategy is LOWEST_COST_WITH_BID_CAP or COST_CAP. Never add automatically.",
+            "Manual bid cap in cents. If omitted for a dummy/test setup, the backend can auto-add a default bid cap. Required when bid_strategy is LOWEST_COST_WITH_BID_CAP or COST_CAP.",
         },
       },
       required: ["campaign_id", "name", "targeting_countries", "optimization_goal", "billing_event", "destination_type"],
@@ -823,17 +826,27 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
 
       // Bid strategy handling:
-      // - Default (omit both fields) = Meta uses LOWEST_COST_WITHOUT_CAP automatically
-      // - Capped strategies REQUIRE bid_amount — only set if user explicitly provided both
-      // - If AI sends a capped strategy without a bid amount, silently fall back to default
+      // - Real campaigns can use automatic lowest-cost without cap
+      // - Dummy/test setups auto-add a small cap when the caller does not provide one
+      // - Explicit capped strategies always keep the provided amount
       const cappedStrategies = ["LOWEST_COST_WITH_BID_CAP", "COST_CAP"];
+      const normalizedBidAmount =
+        typeof bid_amount_cents === "number" && Number.isFinite(bid_amount_cents)
+          ? Math.max(1, Math.round(bid_amount_cents))
+          : undefined;
+
       if (bid_strategy === "LOWEST_COST_WITHOUT_CAP") {
         p.set("bid_strategy", "LOWEST_COST_WITHOUT_CAP");
-      } else if (bid_strategy && cappedStrategies.includes(bid_strategy) && bid_amount_cents) {
+      } else if (bid_strategy && cappedStrategies.includes(bid_strategy) && normalizedBidAmount) {
         p.set("bid_strategy", bid_strategy);
-        p.set("bid_amount", String(Math.round(bid_amount_cents)));
+        p.set("bid_amount", String(normalizedBidAmount));
+      } else if (normalizedBidAmount) {
+        p.set("bid_strategy", "LOWEST_COST_WITH_BID_CAP");
+        p.set("bid_amount", String(normalizedBidAmount));
+      } else {
+        p.set("bid_strategy", "LOWEST_COST_WITH_BID_CAP");
+        p.set("bid_amount", String(AUTO_BID_CAP_CENTS));
       }
-      // else: no bid fields → Meta defaults to lowest-cost (safe)
 
       const result = (await metaPost(
         `${META_BASE}/${acct}/adsets`,
@@ -857,14 +870,18 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
             access_token: tok,
           });
           if (destination_type) p2.set("destination_type", destination_type);
-          if (bid_strategy === "LOWEST_COST_WITHOUT_CAP") p2.set("bid_strategy", "LOWEST_COST_WITHOUT_CAP");
-          if (bid_strategy && cappedStrategies.includes(bid_strategy) && bid_amount_cents) {
+          if (bid_strategy === "LOWEST_COST_WITHOUT_CAP") {
+            p2.set("bid_strategy", "LOWEST_COST_WITHOUT_CAP");
+          } else if (bid_strategy && cappedStrategies.includes(bid_strategy) && normalizedBidAmount) {
             p2.set("bid_strategy", bid_strategy);
-            p2.set("bid_amount", String(Math.round(bid_amount_cents)));
+            p2.set("bid_amount", String(normalizedBidAmount));
+          } else {
+            p2.set("bid_strategy", "LOWEST_COST_WITH_BID_CAP");
+            p2.set("bid_amount", String(AUTO_BID_CAP_CENTS));
           }
           const r2 = (await metaPost(`${META_BASE}/${acct}/adsets`, p2)) as Record<string, unknown>;
           if (r2?.id)
-            return { ...r2, auto_fixed: true, note: "CBO campaign — budget managed at campaign level." };
+            return { ...r2, auto_fixed: true, note: "CBO campaign — budget managed at campaign level. Default bid cap auto-applied." };
         }
       }
       return result;
