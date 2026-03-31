@@ -388,55 +388,109 @@ function MarkdownRenderer({ text, isPending }: { text: string; isPending?: boole
 }
 
 // ─── Tool steps ───────────────────────────────────────────────────────────────
-function ToolSteps({ steps }: { steps: Step[] }) {
-  const [open, setOpen] = useState(false);
-  const actionSteps = steps.filter(s => s.type === "tool_call" || s.type === "tool_result");
-  if (!actionSteps.length) return null;
-  const hasError = actionSteps.some(s => s.type === "tool_result" && s.text.startsWith("Error"));
-  const platforms = [
-    ...new Set(actionSteps.filter(s => s.platform).map(s => s.platform as Platform)),
-  ];
+function ToolSteps({ steps, pending }: { steps: Step[]; pending?: boolean }) {
+  const [open, setOpen] = useState(Boolean(pending));
+  const actionSteps = steps.filter((s) => s.type === "tool_call" || s.type === "tool_result");
+  const hasError = actionSteps.some((s) => s.type === "tool_result" && s.text.startsWith("Error"));
+  const platforms = [...new Set(actionSteps.filter((s) => s.platform).map((s) => s.platform as Platform))];
+  const callCount = actionSteps.filter((s) => s.type === "tool_call").length;
+  const isWorking = !!pending;
+  const label = hasError
+    ? "Tool error"
+    : isWorking
+      ? "Working on it"
+      : actionSteps.length
+        ? `${platforms.length > 0 ? platforms.map((p) => (p === "meta" ? "Meta" : "Google")).join(" + ") : "Tools"} · ${callCount} calls`
+        : "Tools";
+
+  useEffect(() => {
+    if (pending) setOpen(true);
+  }, [pending]);
+
+  if (!actionSteps.length && !pending) return null;
+
   return (
-    <div className="mb-3">
+    <div className="mb-3 overflow-hidden rounded-2xl border border-zinc-800/70 bg-zinc-900/60 shadow-[0_10px_30px_rgba(0,0,0,0.18)] backdrop-blur-sm">
       <button
-        onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-800/50 hover:text-zinc-300"
+        type="button"
+        onClick={() => {
+          if (!pending) setOpen((v) => !v);
+        }}
+        aria-expanded={open}
+        className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors ${pending ? "cursor-default" : "hover:bg-zinc-800/40"}`}
       >
-        <span style={{ transform: open ? "rotate(90deg)" : "none", display: "inline-block", transition: "transform 0.15s" }}>▶</span>
-        <span className={hasError ? "text-red-400" : "text-zinc-500"}>
-          {hasError
-            ? "⚠ Tool error"
-            : `${platforms.length > 0 ? platforms.map(p => p === "meta" ? "Meta" : "Google").join(" + ") : "Tools"} · ${actionSteps.filter(s => s.type === "tool_call").length} calls`}
-        </span>
-        {platforms.map(p => <PlatformBadge key={p} platform={p} />)}
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${hasError ? "border-red-500/40 bg-red-500/10 text-red-400" : isWorking ? "border-[#1877f2]/30 bg-[#1877f2]/10 text-[#60a5fa]" : "border-zinc-700 bg-zinc-800/60 text-zinc-500"}`}
+          >
+            {isWorking ? (
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+              </svg>
+            ) : (
+              <span style={{ transform: open ? "rotate(90deg)" : "none", display: "inline-block", transition: "transform 0.15s" }}>▶</span>
+            )}
+          </span>
+          <div className="min-w-0">
+            <div className={`truncate text-xs font-semibold ${hasError ? "text-red-400" : isWorking ? "text-zinc-100" : "text-zinc-300"}`}>
+              {label}
+            </div>
+            <div className="truncate text-[10px] text-zinc-500">
+              {isWorking
+                ? "Gathering data and executing tools…"
+                : hasError
+                  ? "One or more tool calls failed"
+                  : actionSteps.length > 0
+                    ? `${callCount} tool call${callCount === 1 ? "" : "s"}`
+                    : "No tool activity yet"}
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {platforms.map((p) => (
+            <PlatformBadge key={p} platform={p} />
+          ))}
+        </div>
       </button>
+
       {open && (
-        <div className="mt-1.5 space-y-1.5 rounded-xl border border-zinc-800 bg-zinc-900/80 px-3 py-3 text-xs backdrop-blur-sm">
-          {actionSteps.map((step, i) => {
-            const isResult = step.type === "tool_result";
-            const isError  = isResult && step.text.startsWith("Error");
-            return (
-              <div key={i} className="flex items-start gap-2">
-                {step.platform && <PlatformBadge platform={step.platform} />}
-                <span className={`shrink-0 font-mono ${isError ? "text-red-400" : isResult ? "text-emerald-500" : "text-zinc-500"}`}>
-                  {isResult ? (isError ? "✗" : "✓") : "→"}
-                </span>
-                <span className={`font-mono shrink-0 text-[10px] ${isError ? "text-red-400" : isResult ? "text-zinc-400" : step.platform === "meta" ? "text-[#1877f2]" : "text-[#4285F4]"}`}>
-                  {step.tool ?? (isResult ? "result" : "tool")}
-                </span>
-                <span className={`min-w-0 break-words leading-relaxed ${isError ? "text-red-400" : "text-zinc-500"}`}>
-                  {step.text}
-                </span>
-              </div>
-            );
-          })}
+        <div className="border-t border-zinc-800/60 px-3 py-3 text-xs">
+          {isWorking && (
+            <div className="mb-3 flex items-center gap-2 rounded-xl border border-[#1877f2]/20 bg-[#1877f2]/10 px-3 py-2 text-[11px] text-zinc-200">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#60a5fa]/60 opacity-75" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#60a5fa]" />
+              </span>
+              <span>Working on it…</span>
+            </div>
+          )}
+          <div className="space-y-2.5">
+            {actionSteps.map((step, i) => {
+              const isResult = step.type === "tool_result";
+              const isError = isResult && step.text.startsWith("Error");
+              return (
+                <div key={i} className="flex items-start gap-2.5 rounded-lg bg-zinc-950/30 px-2.5 py-2">
+                  {step.platform && <PlatformBadge platform={step.platform} />}
+                  <span className={`shrink-0 font-mono ${isError ? "text-red-400" : isResult ? "text-emerald-500" : "text-zinc-500"}`}>
+                    {isResult ? (isError ? "✗" : "✓") : "→"}
+                  </span>
+                  <span className={`font-mono shrink-0 text-[10px] ${isError ? "text-red-400" : isResult ? "text-zinc-400" : step.platform === "meta" ? "text-[#1877f2]" : "text-[#4285F4]"}`}>
+                    {step.tool ?? (isResult ? "result" : "tool")}
+                  </span>
+                  <span className={`min-w-0 break-words leading-relaxed ${isError ? "text-red-400" : "text-zinc-400"}`}>
+                    {step.text}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-// ─── Message components ───────────────────────────────────────────────────────
+// ─── Message components ───────────────────────────────────────────────────────// ─── Message components ───────────────────────────────────────────────────────
 function AIAvatar() {
   return (
     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_16px_rgba(66,133,244,0.4)]">
@@ -487,7 +541,7 @@ function AssistantMessage({ msg }: { msg: Message }) {
     <div className="flex w-full gap-4 px-4 py-5" style={{ animation: "fadeIn .2s ease-out" }}>
       <AIAvatar />
       <div className="min-w-0 flex-1 pt-0.5">
-        <ToolSteps steps={msg.steps ?? []} />
+        <ToolSteps steps={msg.steps ?? []} pending={msg.pending} />
         {textSteps.length > 0 ? (
           <MarkdownRenderer text={textSteps.map(s => s.text).join("\n")} isPending={msg.pending} />
         ) : msg.pending ? (
@@ -936,7 +990,7 @@ function UnifiedAdsChatInner() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef    = useRef<HTMLDivElement>(null);
-  const inputRef     = useRef<HTMLInputElement>(null);
+  const textareaRef  = useRef<HTMLTextAreaElement>(null);
 
   const isCoolingDown = cooldownRemaining > 0;
 
@@ -1081,7 +1135,7 @@ function UnifiedAdsChatInner() {
   // ── Session management ─────────────────────────────────────────────────────
   const startNewChat = useCallback(() => {
     setMessages([]); setActiveSessionId(null); setAttachedImages([]);
-    setTimeout(() => inputRef.current?.focus(), 100);
+    setTimeout(() => textareaRef.current?.focus(), 100);
   }, []);
   const loadSession = useCallback((id: string) => {
     const s = sessions.find(s => s.id === id);
@@ -1210,14 +1264,22 @@ function UnifiedAdsChatInner() {
         return f;
       });
       setLoading(false);
-      inputRef.current?.focus();
+      textareaRef.current?.focus();
     }
   }, [input, attachedImages, loading, isConnected, isCoolingDown, messages, activeSessionId, metaCreds, googleCreds, startCooldown]);
 
-  const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-  };
+  const handleComposerResize = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, []);
 
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void sendMessage();
+    }
+  };
   const suggestions = metaCreds && googleCreds ? BOTH_SUGGESTIONS : metaCreds ? META_SUGGESTIONS : GOOGLE_SUGGESTIONS;
 
   // Derive send button disabled state
@@ -1326,7 +1388,7 @@ function UnifiedAdsChatInner() {
                         {suggestions.map(s => (
                           <button
                             key={s}
-                            onClick={() => { setInput(s); inputRef.current?.focus(); }}
+                            onClick={() => { setInput(s); textareaRef.current?.focus(); }}
                             className="rounded-full border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-400 transition-all hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200"
                           >
                             {s}
@@ -1385,81 +1447,101 @@ function UnifiedAdsChatInner() {
                   </div>
                 )}
 
-                <div className={`flex items-end rounded-xl border bg-zinc-900/80 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] backdrop-blur-sm transition-colors ${
+                <div className={`rounded-2xl border bg-zinc-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] backdrop-blur-sm transition-colors ${
                   isCoolingDown && !loading
                     ? "border-zinc-700/80 opacity-75"
                     : "border-zinc-800 focus-within:border-zinc-700"
                 }`}>
-                  {metaCreds && (
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={loading || isCoolingDown}
-                      title="Attach image (Meta ad)"
-                      className="mb-2 ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-600 transition-colors hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="3" y="3" width="18" height="18" rx="2" />
-                        <circle cx="8.5" cy="8.5" r="1.5" />
-                        <polyline points="21 15 16 10 5 21" />
-                      </svg>
-                    </button>
-                  )}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={e => { if (e.target.files?.length) handleImageFiles(e.target.files); e.target.value = ""; }}
-                  />
-                  <Input
-                    ref={inputRef}
-                    placeholder={
-                      isCoolingDown && !loading ? `Wait ${cooldownRemaining}s before sending next message…` :
-                      !isConnected             ? "Connect a platform in the sidebar first…" :
-                      loading                  ? "Thinking…" :
-                      metaCreds && googleCreds ? "Ask about Meta + Google Ads, compare platforms, manage campaigns…" :
-                      metaCreds                ? "Ask about Meta Ads campaigns, ad sets, ads…" :
-                                                 "Ask about Google Ads campaigns, keywords, metrics…"
-                    }
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={handleKey}
-                    onPaste={handlePaste}
-                    disabled={loading || !isConnected}
-                    className="flex-1 border-0 bg-transparent px-4 py-3 text-sm text-zinc-200 shadow-none placeholder:text-zinc-700 focus-visible:ring-0"
-                  />
-                  <button
-                    onClick={sendMessage}
-                    disabled={sendDisabled}
-                    className="mb-2 mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#1877f2] to-[#4285F4] text-white shadow-sm transition-all hover:shadow-[0_0_12px_rgba(66,133,244,0.5)] disabled:opacity-30"
-                    title={isCoolingDown ? `Wait ${cooldownRemaining}s` : "Send message"}
-                  >
-                    {loading ? (
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
-                        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                      </svg>
-                    ) : isCoolingDown ? (
-                      // Show a small static lock/pause icon during cooldown
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                      </svg>
-                    ) : (
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M22 2L11 13" />
-                        <path d="M22 2L15 22 11 13 2 9l20-7z" />
-                      </svg>
+                  <div className="flex items-end gap-2 px-3 py-3">
+                    {metaCreds && (
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={loading || isCoolingDown}
+                        title="Attach image (Meta ad)"
+                        className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/40 text-zinc-500 transition-colors hover:border-zinc-700 hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2" />
+                          <circle cx="8.5" cy="8.5" r="1.5" />
+                          <polyline points="21 15 16 10 5 21" />
+                        </svg>
+                      </button>
                     )}
-                  </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={e => { if (e.target.files?.length) handleImageFiles(e.target.files); e.target.value = ""; }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <textarea
+                        ref={textareaRef}
+                        rows={1}
+                        placeholder={
+                          isCoolingDown && !loading ? `Wait ${cooldownRemaining}s before sending next message…` :
+                          !isConnected             ? "Connect a platform in the sidebar first…" :
+                          loading                  ? "Thinking…" :
+                          metaCreds && googleCreds ? "Ask about Meta + Google Ads, compare platforms, manage campaigns…" :
+                          metaCreds                ? "Ask about Meta Ads campaigns, ad sets, ads…" :
+                                                     "Ask about Google Ads campaigns, keywords, metrics…"
+                        }
+                        value={input}
+                        onChange={(e) => {
+                          setInput(e.target.value);
+                          handleComposerResize(e.currentTarget);
+                        }}
+                        onInput={(e) => handleComposerResize(e.currentTarget)}
+                        onKeyDown={handleKey}
+                        onPaste={handlePaste}
+                        disabled={loading || !isConnected}
+                        className="max-h-[180px] min-h-[52px] w-full resize-none border-0 bg-transparent px-1 py-1.5 text-sm leading-6 text-zinc-100 shadow-none outline-none placeholder:text-zinc-600 focus:ring-0 disabled:cursor-not-allowed"
+                      />
+                      <div className="mt-1 flex items-center justify-between gap-2 px-1 pb-0.5 text-[10px] text-zinc-600">
+                        <span className="truncate">
+                          {loading
+                            ? "Generating response…"
+                            : isCoolingDown
+                              ? `Next send available in ${cooldownRemaining}s`
+                              : "Enter to send · Shift+Enter for a new line"}
+                        </span>
+                        {input.trim().length > 0 && (
+                          <span className="shrink-0 tabular-nums text-zinc-500">{input.length} chars</span>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={sendMessage}
+                      disabled={sendDisabled}
+                      className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] text-white shadow-sm transition-all hover:shadow-[0_0_12px_rgba(66,133,244,0.5)] disabled:opacity-30"
+                      title={isCoolingDown ? `Wait ${cooldownRemaining}s` : "Send message"}
+                    >
+                      {loading ? (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
+                          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                        </svg>
+                      ) : isCoolingDown ? (
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
+                      ) : (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 2L11 13" />
+                          <path d="M22 2L15 22 11 13 2 9l20-7z" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <p className="mt-2 text-center text-[10px] text-zinc-700">
-                  {metaCreds && googleCreds ? "Both platforms connected · " : ""}
-                  Actions execute immediately · Meta budgets in cents · Google budgets in micros
-                  {isCoolingDown && !loading && (
-                    <span className="ml-1 text-zinc-600">· Cooldown active</span>
-                  )}
-                </p>
+  {metaCreds && googleCreds ? "Both platforms connected · " : ""}
+  Actions execute immediately · Meta budgets in cents · Google budgets in micros
+  {isCoolingDown && !loading && (
+    <span className="ml-1 text-zinc-600">· Cooldown active</span>
+  )}
+</p>
               </div>
             </div>
           </div>
