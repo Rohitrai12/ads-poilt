@@ -46,7 +46,13 @@ BEHAVIORAL RULES:
 13. GOOGLE tokens expire hourly — if you get UNAUTHENTICATED errors, inform the user their Google token needs refreshing.
 14. After any create operation, always confirm the ID/resource name so users know where to find it.
 15. When the user says "my campaigns" without specifying a platform, query BOTH if connected.
-16. META CAMPAIGN CREATION: Always pass use_cbo. Set use_cbo=true when providing a campaign-level daily_budget_cents (CBO). Set use_cbo=false when budgets will be managed per ad set. This is required by the Meta API (maps to is_adset_budget_sharing_enabled).`;
+16. META CAMPAIGN CREATION: Always pass use_cbo. Set use_cbo=true when providing a campaign-level daily_budget_cents (CBO). Set use_cbo=false when budgets will be managed per ad set. This is required by the Meta API.
+17. META AD SET CREATION: Before calling meta_create_adset, ALWAYS collect from the user:
+    (a) Destination/conversion location (destination_type) — ask "Where should the ad send people? Website, App, Messenger, Instagram Direct, WhatsApp, or Facebook Page?"
+    (b) Interests — ask "Do you want to target specific interests? If so, tell me the keywords and I will search for matching interest categories."
+    (c) Bid cap — ask "Do you want to set a manual bid cap, or use lowest-cost automatic bidding?" Only set bid_amount_cents if the user explicitly provides a bid cap amount. NEVER add a bid cap automatically.
+    Never assume or auto-fill these values. Always ask explicitly before creating.
+18. META INTERESTS: When a user mentions interest targeting keywords, call meta_search_interests with those keywords, present the results to the user, confirm which interests to add, then pass the confirmed interest objects into meta_create_adset. Never skip the confirmation step.`;
 
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
@@ -148,27 +154,92 @@ const META_TOOLS = [
       required: ["campaign_id"],
     },
   },
+  // ── FIX #2, #3, #4: Added destination_type (required), interests, and explicit bid cap guidance ──
   {
     name: "meta_create_adset",
     description:
-      "Create a Meta ad set. Check campaign bid_strategy first. For CBO campaigns, omit daily_budget_cents.",
+      "Create a Meta ad set. ALWAYS collect destination_type, interests, and bid cap preference from the user BEFORE calling this tool. For CBO campaigns, omit daily_budget_cents. Only set bid_amount_cents if the user explicitly provided a bid cap amount — never add it automatically.",
     input_schema: {
       type: "object",
       properties: {
         campaign_id: { type: "string" },
         name: { type: "string" },
-        daily_budget_cents: { type: "number" },
+        daily_budget_cents: {
+          type: "number",
+          description: "Daily budget in cents. Omit for CBO campaigns.",
+        },
+        destination_type: {
+          type: "string",
+          enum: [
+            "WEBSITE",
+            "APP",
+            "MESSENGER",
+            "INSTAGRAM_DIRECT",
+            "WHATSAPP",
+            "ON_AD",
+            "FACEBOOK",
+            "SHOP_AUTOMATIC",
+          ],
+          description:
+            "REQUIRED. Conversion location — where the ad sends people. Must be collected from the user before creating the ad set.",
+        },
         targeting_countries: { type: "array", items: { type: "string" } },
         age_min: { type: "number" },
         age_max: { type: "number" },
+        interests: {
+          type: "array",
+          description:
+            "Interest targeting objects. Each requires id and name. Use meta_search_interests to find IDs from keywords, then confirm selections with the user before including here.",
+          items: {
+            type: "object",
+            properties: {
+              id:   { type: "string", description: "Meta interest ID" },
+              name: { type: "string", description: "Human-readable interest name" },
+            },
+            required: ["id", "name"],
+          },
+        },
         optimization_goal: {
           type: "string",
-          enum: ["LINK_CLICKS", "IMPRESSIONS", "REACH", "LEAD_GENERATION", "CONVERSIONS", "APP_INSTALLS"],
+          enum: [
+            "LINK_CLICKS",
+            "IMPRESSIONS",
+            "REACH",
+            "LEAD_GENERATION",
+            "CONVERSIONS",
+            "APP_INSTALLS",
+            "LANDING_PAGE_VIEWS",
+            "VALUE",
+            "THRUPLAY",
+          ],
         },
         billing_event: { type: "string", enum: ["IMPRESSIONS", "LINK_CLICKS"] },
-        bid_amount_cents: { type: "number" },
+        bid_amount_cents: {
+          type: "number",
+          description:
+            "Manual bid cap in cents. ONLY set this if the user explicitly requested a bid cap and provided the amount. Never add automatically.",
+        },
       },
-      required: ["campaign_id", "name", "targeting_countries", "optimization_goal", "billing_event"],
+      required: ["campaign_id", "name", "targeting_countries", "optimization_goal", "billing_event", "destination_type"],
+    },
+  },
+  {
+    name: "meta_search_interests",
+    description:
+      "Search Meta's interest targeting library by keyword. Call this when the user mentions interest targeting. Returns matching interests with IDs and audience sizes. Present results to the user and confirm which to add before calling meta_create_adset.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Keyword to search interests for, e.g. 'fitness', 'coffee', 'travel'",
+        },
+        limit: {
+          type: "number",
+          description: "Max results to return (default 10, max 25)",
+        },
+      },
+      required: ["query"],
     },
   },
   {
@@ -567,7 +638,9 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return safeParseJSON(await (await fetch(url)).text());
     }
 
-    // ── FIX: meta_create_campaign now sends is_adset_budget_sharing_enabled ──
+    // ── FIX #1: Inverted is_adset_budget_sharing_enabled logic ──────────────
+    // CBO (use_cbo=true)  → campaign owns budget → adsets do NOT share independently → "false"
+    // ABO (use_cbo=false) → each adset owns its own budget → adset budget sharing enabled → "true"
     if (name === "meta_create_campaign") {
       const { name: n, objective, special_ad_category, daily_budget_cents, use_cbo } = input as {
         name: string;
@@ -577,11 +650,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         use_cbo?: boolean;
       };
 
-      // Meta API requires is_adset_budget_sharing_enabled when NOT using CBO.
-      // true  = ad sets may share a small portion of budget (ABO sharing mode)
-      // false = ad sets manage budgets independently (standard ABO behaviour)
-      // We use the use_cbo flag from the AI to set it correctly, defaulting to false.
-      const isAdsetBudgetSharing = use_cbo === true ? "true" : "false";
+      const isAdsetBudgetSharing = use_cbo === true ? "false" : "true";
 
       const p = new URLSearchParams({
         name: n,
@@ -647,14 +716,17 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return safeParseJSON(await res.text());
     }
 
+    // ── FIX #2 + #3 + #4: destination_type, interests, explicit bid cap ─────
     if (name === "meta_create_adset") {
       const {
         campaign_id,
         name: n,
         daily_budget_cents,
+        destination_type,
         targeting_countries,
         age_min,
         age_max,
+        interests,
         optimization_goal,
         billing_event,
         bid_amount_cents,
@@ -662,23 +734,35 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         campaign_id: string;
         name: string;
         daily_budget_cents?: number;
+        destination_type?: string;
         targeting_countries: string[];
         age_min?: number;
         age_max?: number;
+        interests?: Array<{ id: string; name: string }>;
         optimization_goal: string;
         billing_event: string;
         bid_amount_cents?: number;
       };
+
       const targeting: Record<string, unknown> = {
         geo_locations: { countries: targeting_countries },
         targeting_automation: { advantage_audience: 0 },
       };
       if (age_min) targeting.age_min = age_min;
       if (age_max) targeting.age_max = age_max;
+
+      // Add interests via flexible_spec if provided
+      if (interests && interests.length > 0) {
+        targeting.flexible_spec = [
+          { interests: interests.map((i) => ({ id: i.id, name: i.name })) },
+        ];
+      }
+
       const effectiveBilling =
         optimization_goal === "LINK_CLICKS" && billing_event === "LINK_CLICKS"
           ? "IMPRESSIONS"
           : billing_event;
+
       const p = new URLSearchParams({
         campaign_id: String(campaign_id),
         name: n,
@@ -688,12 +772,18 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         status: "PAUSED",
         access_token: tok,
       });
+
+      // Add destination_type if provided
+      if (destination_type) p.set("destination_type", destination_type);
       if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
+      // Only add bid cap if explicitly provided by user
       if (bid_amount_cents) p.set("bid_amount", String(Math.round(bid_amount_cents)));
+
       const result = (await metaPost(
         `${META_BASE}/${acct}/adsets`,
         p
       )) as Record<string, unknown>;
+
       // CBO auto-retry: if Meta complains about budget conflict, strip budget and retry
       if (!result?.id) {
         const err = result?.error as Record<string, unknown> | undefined;
@@ -710,6 +800,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
             status: "PAUSED",
             access_token: tok,
           });
+          if (destination_type) p2.set("destination_type", destination_type);
           if (bid_amount_cents) p2.set("bid_amount", String(Math.round(bid_amount_cents)));
           const r2 = (await metaPost(`${META_BASE}/${acct}/adsets`, p2)) as Record<string, unknown>;
           if (r2?.id)
@@ -717,6 +808,24 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         }
       }
       return result;
+    }
+
+    // ── FIX #4: meta_search_interests executor ────────────────────────────────
+    if (name === "meta_search_interests") {
+      const { query, limit = 10 } = input as { query: string; limit?: number };
+      const res = await fetch(
+        `${META_BASE}/search?type=adinterest&q=${encodeURIComponent(query)}&limit=${Math.min(Number(limit), 25)}&access_token=${tok}`
+      );
+      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const items = (data?.data as Array<Record<string, unknown>> ?? []).map((i) => ({
+        id:                          String(i.id),
+        name:                        String(i.name),
+        audience_size_lower_bound:   i.audience_size_lower_bound,
+        audience_size_upper_bound:   i.audience_size_upper_bound,
+        topic:                       i.topic,
+        path:                        i.path,
+      }));
+      return { interests: items, count: items.length };
     }
 
     if (name === "meta_update_adset_status") {
@@ -1412,6 +1521,7 @@ function fmtCall(name: string, i: ToolInput): string {
     meta_bulk_update_campaign_status: `Bulk setting ${(i.campaign_ids as string[])?.length} Meta campaigns → ${i.status}…`,
     meta_list_adsets: `Fetching Meta ad sets for campaign ${i.campaign_id}…`,
     meta_create_adset: `Creating Meta ad set "${i.name}"…`,
+    meta_search_interests: `Searching Meta interests for "${i.query}"…`,
     meta_update_adset_status: `Setting Meta ad set ${i.adset_id} → ${i.status}`,
     meta_list_ads: `Fetching Meta ads in ad set ${i.adset_id}…`,
     meta_get_ad_insights: `Fetching Meta ad performance (${i.date_preset})…`,
@@ -1441,7 +1551,8 @@ function fmtCall(name: string, i: ToolInput): string {
 function fmtResult(name: string, result: unknown): string {
   const r = result as Record<string, unknown>;
   if (r?.error) return `Error: ${JSON.stringify(r.error)}`;
-  const count = (r?.data as unknown[] || (r?.results as unknown[]))?.length;
+  const count = (r?.data as unknown[] || (r?.results as unknown[]) || (r?.interests as unknown[]))?.length;
+  if (name === "meta_search_interests") return `Found ${count ?? "?"} interest${count !== 1 ? "s" : ""}`;
   if (
     name.includes("list_") ||
     (name.includes("get_") && !name.includes("metrics") && !name.includes("insights"))
