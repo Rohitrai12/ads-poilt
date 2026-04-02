@@ -111,7 +111,7 @@ export default function Home() {
         </ul>
         <div className="nav-right">
           <a href="/login" className="nav-login">Login</a>
-          <a href="/singup"><button className="btn-nav">Start Free →</button></a>
+          <a href="/sign-up"><button className="btn-nav">Start Free →</button></a>
         </div>
       </nav>
 
