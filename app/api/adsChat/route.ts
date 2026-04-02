@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-const CLAUDE_MODEL = "claude-sonnet-4-5";
+const CLAUDE_MODEL = "claude-sonnet-4-20250514";
 const META_VERSION = "v25.0";
 const META_BASE = `https://graph.facebook.com/${META_VERSION}`;
 const GOOGLE_ADS_VERSION = "v18";
