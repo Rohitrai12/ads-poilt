@@ -42,7 +42,7 @@ BEHAVIORAL RULES:
 7. CROSS-PLATFORM INSIGHTS: When both platforms are connected and the user asks general questions (e.g. "how are my campaigns doing?"), proactively fetch data from BOTH platforms and give a unified summary.
 8. CROSS-PLATFORM COMPARISONS: You can compare Meta vs Google performance side-by-side — e.g. "Google is driving 3x more conversions but Meta has lower CPCs".
 9. DESTRUCTIVE ACTIONS: Warn before any archive/delete/remove. Require explicit confirmation.
-10. META image ads: upload_ad_image first → then meta_create_ad with image_hash.
+10. META image ads: call meta_upload_ad_image first → then meta_create_ad with the returned image_hash.
 11. GOOGLE RSAs: provide 3–15 headlines and 2–4 descriptions.
 12. META Campaign Budget Optimization (CBO): ad sets under CBO campaigns must NOT have daily_budget.
 13. GOOGLE tokens expire hourly — if you get UNAUTHENTICATED errors, inform the user their Google token needs refreshing.
@@ -71,11 +71,15 @@ BEHAVIORAL RULES:
     - NEVER set bid_strategy to a capped type without also providing bid_amount_cents.
     - NEVER set bid_amount_cents without a matching capped bid_strategy.
 21. BUSINESS ASSETS: Use meta_list_businesses to show the user's business portfolios, then meta_list_business_ad_accounts or meta_list_business_pages to enumerate assets under a specific business. This helps users understand which business owns their ad account and pages.
-22. PRODUCT CATALOGS: Use meta_list_catalogs to list product catalogs under a business. Use meta_create_catalog to create a new catalog. Use meta_list_catalog_products to browse products. Catalogs are required for Dynamic Ads and Advantage+ Shopping Campaigns.`;
+22. PRODUCT CATALOGS: Use meta_list_catalogs to list product catalogs under a business. Use meta_create_catalog to create a new catalog. Use meta_list_catalog_products to browse products. Catalogs are required for Dynamic Ads and Advantage+ Shopping Campaigns.
+23. IMAGE UPLOADS FOR ADS: When the user attaches an image in the conversation, the image is provided as a base64-encoded image content block in the message. To create an image ad:
+    Step 1 — Call meta_upload_ad_image. Use the base64 data from the image content block as image_base64, and use the filename provided (or default to "ad_image.jpg"). This returns an image_hash.
+    Step 2 — Call meta_create_ad with the image_hash from Step 1, plus the required page_id (from the connected page in context), headline, body, link_url, and call_to_action.
+    IMPORTANT: The page_id is available in the session context as the connected Facebook Page ID. Always use it automatically — never ask the user for the page_id if it is already provided in context.
+    If no page is connected, inform the user they need to select a Facebook Page in the connection panel before creating ads.`;
 
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
-  // ── Existing campaign tools ───────────────────────────────────────────────
   {
     name: "meta_list_campaigns",
     description: "List all Meta (Facebook/Instagram) campaigns with ID, name, status, objective, budget.",
@@ -277,26 +281,26 @@ const META_TOOLS = [
   },
   {
     name: "meta_upload_ad_image",
-    description: "Upload an image to the Meta ad account image library. Returns image_hash.",
+    description: "Upload an image to the Meta ad account image library. Returns image_hash. Call this FIRST before meta_create_ad when the user has attached an image.",
     input_schema: {
       type: "object",
       properties: {
-        image_base64: { type: "string" },
-        image_filename: { type: "string" },
+        image_base64: { type: "string", description: "Base64-encoded image data (no data: prefix)." },
+        image_filename: { type: "string", description: "Filename with extension, e.g. ad_image.jpg" },
       },
       required: ["image_base64", "image_filename"],
     },
   },
   {
     name: "meta_create_ad",
-    description: "Create a Meta ad (image or text/link).",
+    description: "Create a Meta ad (image or text/link). For image ads, first call meta_upload_ad_image to get the image_hash, then pass it here.",
     input_schema: {
       type: "object",
       properties: {
         adset_id: { type: "string" },
         name: { type: "string" },
-        page_id: { type: "string" },
-        image_hash: { type: "string" },
+        page_id: { type: "string", description: "Facebook Page ID. Use the connected page from context." },
+        image_hash: { type: "string", description: "Hash returned by meta_upload_ad_image. Required for image ads." },
         headline: { type: "string" },
         body: { type: "string" },
         link_url: { type: "string" },
@@ -318,12 +322,10 @@ const META_TOOLS = [
     description: "List all Meta custom audiences.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
-
-  // ── NEW: Business Asset User Profile tools ────────────────────────────────
   {
     name: "meta_get_user_profile",
     description:
-      "Get the authenticated user's Meta profile including name, email, and business-related fields. Required for business_asset_user_profile permission. Use this to identify which user is managing the ad account and to verify their identity.",
+      "Get the authenticated user's Meta profile including name, email, and business-related fields.",
     input_schema: {
       type: "object",
       properties: {
@@ -339,14 +341,13 @@ const META_TOOLS = [
   {
     name: "meta_list_businesses",
     description:
-      "List all Business Manager portfolios the user has access to (uses /me/businesses). Required for business_asset_user_profile permission. Use this to let users select which Business Portfolio owns their ad accounts and pages before running campaigns.",
+      "List all Business Manager portfolios the user has access to (uses /me/businesses).",
     input_schema: {
       type: "object",
       properties: {
         fields: {
           type: "array",
           items: { type: "string" },
-          description: "Fields to fetch per business (id, name, profile_picture_uri, etc.)",
         },
       },
       required: [],
@@ -355,177 +356,135 @@ const META_TOOLS = [
   {
     name: "meta_list_business_ad_accounts",
     description:
-      "List all ad accounts owned by or accessible to a specific Business Manager (uses /{business-id}/owned_ad_accounts and /{business-id}/client_ad_accounts). Uses business_asset_user_profile to enumerate assets. Helps users select the correct ad account for campaign management.",
+      "List all ad accounts owned by or accessible to a specific Business Manager.",
     input_schema: {
       type: "object",
       properties: {
-        business_id: { type: "string", description: "The Business Manager ID." },
-        include_client_accounts: {
-          type: "boolean",
-          description: "Whether to also fetch client ad accounts. Default true.",
-        },
+        business_id: { type: "string" },
+        include_client_accounts: { type: "boolean" },
       },
       required: ["business_id"],
     },
   },
   {
     name: "meta_list_business_pages",
-    description:
-      "List Facebook Pages owned by a Business Manager (uses /{business-id}/owned_pages). Part of business_asset_user_profile integration. Pages are required when creating Meta ads — this tool helps users identify which Page to associate with their ads.",
+    description: "List Facebook Pages owned by a Business Manager.",
     input_schema: {
       type: "object",
-      properties: {
-        business_id: { type: "string" },
-      },
+      properties: { business_id: { type: "string" } },
       required: ["business_id"],
     },
   },
   {
     name: "meta_list_business_pixels",
-    description:
-      "List Meta Pixels (datasets) owned by a Business Manager (uses /{business-id}/owned_pixels). Part of business_asset_user_profile. Pixels are required for conversion tracking on OUTCOME_SALES and OUTCOME_LEADS campaigns.",
+    description: "List Meta Pixels (datasets) owned by a Business Manager.",
     input_schema: {
       type: "object",
-      properties: {
-        business_id: { type: "string" },
-      },
+      properties: { business_id: { type: "string" } },
       required: ["business_id"],
     },
   },
   {
     name: "meta_get_business_user",
-    description:
-      "Get the business user profile for a specific person within a Business Manager (uses /{business-id}/business_users). Uses business_asset_user_profile permission. Helps identify user roles and permissions within a business account.",
+    description: "Get the business user profile for a specific person within a Business Manager.",
     input_schema: {
       type: "object",
-      properties: {
-        business_id: { type: "string" },
-      },
+      properties: { business_id: { type: "string" } },
       required: ["business_id"],
     },
   },
-
-  // ── NEW: Catalog Management tools ─────────────────────────────────────────
   {
     name: "meta_list_catalogs",
-    description:
-      "List all product catalogs owned by a Business Manager (uses /{business-id}/owned_product_catalogs). Requires catalog_management permission. Product catalogs are required for Dynamic Ads and Advantage+ Shopping Campaigns that automatically show relevant products to users.",
+    description: "List all product catalogs owned by a Business Manager.",
     input_schema: {
       type: "object",
-      properties: {
-        business_id: { type: "string", description: "The Business Manager ID." },
-      },
+      properties: { business_id: { type: "string" } },
       required: ["business_id"],
     },
   },
   {
     name: "meta_create_catalog",
-    description:
-      "Create a new product catalog under a Business Manager (POST /{business-id}/owned_product_catalogs). Requires catalog_management permission. A catalog stores your product inventory used for Dynamic Ads — required for e-commerce advertisers who want to retarget users with specific products they viewed.",
+    description: "Create a new product catalog under a Business Manager.",
     input_schema: {
       type: "object",
       properties: {
         business_id: { type: "string" },
-        name: { type: "string", description: "Catalog name, e.g. 'Main Product Catalog'" },
+        name: { type: "string" },
         catalog_type: {
           type: "string",
           enum: ["SIMPLE", "AUTOMOTIVE", "HOTELS", "FLIGHTS", "DESTINATIONS", "HOME_LISTINGS", "JOBS"],
-          description: "Type of catalog. Use SIMPLE for general e-commerce.",
         },
-        da_display_settings: {
-          type: "object",
-          description: "Optional dynamic ads display settings.",
-        },
+        da_display_settings: { type: "object" },
       },
       required: ["business_id", "name", "catalog_type"],
     },
   },
   {
     name: "meta_get_catalog",
-    description:
-      "Get details of a specific product catalog (GET /{catalog-id}). Requires catalog_management. Shows catalog name, product count, and status.",
+    description: "Get details of a specific product catalog.",
     input_schema: {
       type: "object",
-      properties: {
-        catalog_id: { type: "string" },
-      },
+      properties: { catalog_id: { type: "string" } },
       required: ["catalog_id"],
     },
   },
   {
     name: "meta_list_catalog_product_sets",
-    description:
-      "List product sets (subsets of a catalog) for use in dynamic ads (GET /{catalog-id}/product_sets). Requires catalog_management. Product sets let you create ad sets that only show a filtered subset of your catalog — e.g. 'Sale items only' or 'Category: Shoes'.",
+    description: "List product sets (subsets of a catalog) for use in dynamic ads.",
     input_schema: {
       type: "object",
       properties: {
         catalog_id: { type: "string" },
-        limit: { type: "number", description: "Max results (default 25)." },
+        limit: { type: "number" },
       },
       required: ["catalog_id"],
     },
   },
   {
     name: "meta_create_product_set",
-    description:
-      "Create a product set (filtered subset) within a catalog (POST /{catalog-id}/product_sets). Requires catalog_management. Use to define which products show in a specific dynamic ad campaign, e.g. filter by category, price range, or availability.",
+    description: "Create a product set (filtered subset) within a catalog.",
     input_schema: {
       type: "object",
       properties: {
         catalog_id: { type: "string" },
         name: { type: "string" },
-        filter: {
-          type: "object",
-          description:
-            "Filter rules as a Meta product set filter object, e.g. {retailer_id: {is_any: ['SKU1','SKU2']}} or {product_type: {contains: 'shoes'}}",
-        },
+        filter: { type: "object" },
       },
       required: ["catalog_id", "name", "filter"],
     },
   },
   {
     name: "meta_list_catalog_products",
-    description:
-      "List products (items) within a catalog (GET /{catalog-id}/products). Requires catalog_management. Lets users verify their product feed is correctly imported before launching Dynamic Ads.",
+    description: "List products (items) within a catalog.",
     input_schema: {
       type: "object",
       properties: {
         catalog_id: { type: "string" },
-        limit: { type: "number", description: "Max products to return (default 25, max 100)." },
-        filter_equal: {
-          type: "object",
-          description: "Optional field:value filters, e.g. {availability: 'in stock'}",
-        },
+        limit: { type: "number" },
+        filter_equal: { type: "object" },
       },
       required: ["catalog_id"],
     },
   },
   {
     name: "meta_update_catalog_product",
-    description:
-      "Update a specific product in a catalog (POST /{catalog-id}/items_batch). Requires catalog_management. Lets users update price, availability, or description of products directly from the ad management interface.",
+    description: "Update a specific product in a catalog.",
     input_schema: {
       type: "object",
       properties: {
         catalog_id: { type: "string" },
-        retailer_id: { type: "string", description: "The product's retailer ID (SKU)." },
-        updates: {
-          type: "object",
-          description: "Fields to update, e.g. {price: '29.99 USD', availability: 'in stock'}",
-        },
+        retailer_id: { type: "string" },
+        updates: { type: "object" },
       },
       required: ["catalog_id", "retailer_id", "updates"],
     },
   },
   {
     name: "meta_get_catalog_diagnostics",
-    description:
-      "Get diagnostics and issues for a product catalog (GET /{catalog-id}/check_batch_request_status or catalog insights). Requires catalog_management. Helps users identify and fix feed issues (missing images, invalid prices) that prevent products from being served in ads.",
+    description: "Get diagnostics and issues for a product catalog.",
     input_schema: {
       type: "object",
-      properties: {
-        catalog_id: { type: "string" },
-      },
+      properties: { catalog_id: { type: "string" } },
       required: ["catalog_id"],
     },
   },
@@ -739,7 +698,7 @@ const GOOGLE_TOOLS = [
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 type ToolInput = Record<string, unknown>;
 type Credentials = {
-  meta?: { accessToken: string; adAccountId: string };
+  meta?: { accessToken: string; adAccountId: string; pageId?: string | null; pixelId?: string | null };
   google?: { accessToken: string; customerId: string };
 };
 
@@ -822,10 +781,9 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
   if (name.startsWith("meta_")) {
     if (!creds.meta)
       return { error: "Meta Ads is not connected. Ask the user to connect their Meta account first." };
-    const { accessToken: tok, adAccountId } = creds.meta;
+    const { accessToken: tok, adAccountId, pageId: credPageId } = creds.meta;
     const acct = `act_${adAccountId}`;
 
-    // ── Existing tools ───────────────────────────────────────────────────────
     if (name === "meta_list_campaigns") {
       const res = await fetch(
         `${META_BASE}/${acct}/campaigns?fields=id,name,status,objective,daily_budget,lifetime_budget&access_token=${tok}`
@@ -1013,53 +971,112 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_upload_ad_image") {
       const { image_base64, image_filename } = input as { image_base64: string; image_filename: string };
-      if (!image_base64 || image_base64.length < 100) return { error: "image_base64 is empty or too short." };
-      const binary = atob(image_base64);
+
+      // Strip data URL prefix if present (e.g. "data:image/jpeg;base64,")
+      const cleanBase64 = image_base64.includes(",")
+        ? image_base64.split(",")[1]
+        : image_base64;
+
+      if (!cleanBase64 || cleanBase64.length < 100) {
+        return { error: "image_base64 is empty or too short. The image data was not passed correctly." };
+      }
+
+      let binary: string;
+      try {
+        binary = atob(cleanBase64);
+      } catch {
+        return { error: "image_base64 is not valid base64. Ensure you are passing raw base64 without any data: prefix." };
+      }
+
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const ext = image_filename.toLowerCase().split(".").pop() ?? "jpg";
-      const mimes: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
+
+      const ext = (image_filename ?? "ad_image.jpg").toLowerCase().split(".").pop() ?? "jpg";
+      const mimes: Record<string, string> = {
+        jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+        gif: "image/gif", webp: "image/webp",
+      };
+      const mimeType = mimes[ext] ?? "image/jpeg";
+
       const form = new FormData();
       form.append("access_token", tok);
-      form.append("filename", new Blob([bytes], { type: mimes[ext] ?? "image/jpeg" }), image_filename);
+      form.append("filename", new Blob([bytes], { type: mimeType }), image_filename ?? "ad_image.jpg");
+
       const res = await fetch(`${META_BASE}/${acct}/adimages`, { method: "POST", body: form });
       const result = safeParseJSON(await res.text()) as Record<string, unknown>;
+
       if (result.images) {
         const images = result.images as Record<string, { hash: string; url: string }>;
         const first = Object.values(images)[0];
-        if (first) return { success: true, image_hash: first.hash, image_url: first.url };
+        if (first) {
+          return { success: true, image_hash: first.hash, image_url: first.url };
+        }
       }
-      return result;
+
+      // Return the raw error so Claude can report it
+      return { success: false, raw: result };
     }
 
     if (name === "meta_create_ad") {
-      const { adset_id, name: adName, page_id, image_hash, headline, body, link_url, call_to_action, description } = input as {
-        adset_id: string; name: string; page_id: string; image_hash?: string;
+      const {
+        adset_id, name: adName, page_id: inputPageId, image_hash,
+        headline, body, link_url, call_to_action, description,
+      } = input as {
+        adset_id: string; name: string; page_id?: string; image_hash?: string;
         headline: string; body: string; link_url: string; call_to_action: string; description?: string;
       };
-      const hasImage = image_hash && image_hash.trim().length > 0;
+
+      // Resolve page_id: prefer tool input, fall back to creds
+      const page_id = inputPageId || credPageId;
+      if (!page_id) {
+        return {
+          error: "page_id is required to create an ad. No Facebook Page is connected. Please select a Page in the connection panel (sidebar → Meta Ads → Page).",
+        };
+      }
+
+      const hasImage = !!(image_hash && image_hash.trim().length > 0);
       const linkData: Record<string, unknown> = {
-        link: link_url, message: body, name: headline,
+        link: link_url,
+        message: body,
+        name: headline,
         call_to_action: { type: call_to_action },
       };
       if (description) linkData.description = description;
       if (hasImage) linkData.image_hash = image_hash!.trim();
+
       const creativeRes = (await metaPostForm(`${META_BASE}/${acct}/adcreatives`, {
         name: `${adName} Creative`,
         object_story_spec: JSON.stringify({ page_id: String(page_id), link_data: linkData }),
         access_token: tok,
       })) as Record<string, unknown>;
-      if (creativeRes.error) return { error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}` };
+
+      if (creativeRes.error) {
+        return { error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}` };
+      }
+
       const adRes = (await metaPostForm(`${META_BASE}/${acct}/ads`, {
-        name: adName, adset_id: String(adset_id),
+        name: adName,
+        adset_id: String(adset_id),
         creative: JSON.stringify({ creative_id: String(creativeRes.id) }),
-        status: "PAUSED", access_token: tok,
+        status: "PAUSED",
+        access_token: tok,
       })) as Record<string, unknown>;
+
       if (adRes.id) {
-        const verified = safeParseJSON(await (await fetch(
-          `${META_BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`
-        )).text()) as Record<string, unknown>;
-        return { success: true, ad_id: adRes.id, status: "PAUSED", ad_type: hasImage ? "image" : "text_link", verified_adset_id: verified?.adset_id, verified_campaign_id: verified?.campaign_id };
+        const verified = safeParseJSON(
+          await (await fetch(
+            `${META_BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`
+          )).text()
+        ) as Record<string, unknown>;
+        return {
+          success: true,
+          ad_id: adRes.id,
+          status: "PAUSED",
+          ad_type: hasImage ? "image" : "text_link",
+          page_id_used: page_id,
+          verified_adset_id: verified?.adset_id,
+          verified_campaign_id: verified?.campaign_id,
+        };
       }
       return adRes;
     }
@@ -1068,8 +1085,6 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       const res = await fetch(`${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count&access_token=${tok}`);
       return safeParseJSON(await res.text());
     }
-
-    // ── NEW: Business Asset User Profile tools ──────────────────────────────
 
     if (name === "meta_get_user_profile") {
       const { fields = ["id", "name", "email"] } = input as { fields?: string[] };
@@ -1101,11 +1116,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         ) as Record<string, unknown>;
         client = (clientRes?.data as Array<Record<string, unknown>>) ?? [];
       }
-      return {
-        owned_ad_accounts: owned,
-        client_ad_accounts: client,
-        total: owned.length + client.length,
-      };
+      return { owned_ad_accounts: owned, client_ad_accounts: client, total: owned.length + client.length };
     }
 
     if (name === "meta_list_business_pages") {
@@ -1135,8 +1146,6 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return { business_users: users, count: users.length };
     }
 
-    // ── NEW: Catalog Management tools ────────────────────────────────────────
-
     if (name === "meta_list_catalogs") {
       const { business_id } = input as { business_id: string };
       const fields = "id,name,business,product_count,da_display_settings,destination_catalog_settings,catalog_store";
@@ -1150,9 +1159,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       const { business_id, name: catalogName, catalog_type, da_display_settings } = input as {
         business_id: string; name: string; catalog_type: string; da_display_settings?: object;
       };
-      const p = new URLSearchParams({
-        name: catalogName, vertical: catalog_type, access_token: tok,
-      });
+      const p = new URLSearchParams({ name: catalogName, vertical: catalog_type, access_token: tok });
       if (da_display_settings) p.set("da_display_settings", JSON.stringify(da_display_settings));
       return metaPost(`${META_BASE}/${String(business_id)}/owned_product_catalogs`, p);
     }
@@ -1177,11 +1184,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_create_product_set") {
       const { catalog_id, name: setName, filter } = input as { catalog_id: string; name: string; filter: object };
-      const p = new URLSearchParams({
-        name: setName,
-        filter: JSON.stringify(filter),
-        access_token: tok,
-      });
+      const p = new URLSearchParams({ name: setName, filter: JSON.stringify(filter), access_token: tok });
       return metaPost(`${META_BASE}/${String(catalog_id)}/product_sets`, p);
     }
 
@@ -1202,33 +1205,21 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_update_catalog_product") {
       const { catalog_id, retailer_id, updates } = input as { catalog_id: string; retailer_id: string; updates: Record<string, unknown> };
-      const payload = {
-        requests: [
-          {
-            method: "UPDATE",
-            retailer_id: retailer_id,
-            data: updates,
-          },
-        ],
-      };
+      const payload = { requests: [{ method: "UPDATE", retailer_id, data: updates }] };
       return metaPostJSON(`${META_BASE}/${String(catalog_id)}/items_batch?access_token=${tok}`, payload, tok);
     }
 
     if (name === "meta_get_catalog_diagnostics") {
       const { catalog_id } = input as { catalog_id: string };
-      // Fetch catalog-level issue summary
       const fields = "id,name,product_count,da_display_settings";
-      const diagnosticsUrl = `${META_BASE}/${String(catalog_id)}?fields=${fields},product_issues&access_token=${tok}`;
-      const catalogData = safeParseJSON(await (await fetch(diagnosticsUrl)).text()) as Record<string, unknown>;
-      // Also fetch a sample of products with errors
+      const catalogData = safeParseJSON(
+        await (await fetch(`${META_BASE}/${String(catalog_id)}?fields=${fields},product_issues&access_token=${tok}`)).text()
+      ) as Record<string, unknown>;
       const errorProductsUrl = `${META_BASE}/${String(catalog_id)}/products?filter=${encodeURIComponent(
         JSON.stringify([{ field: "availability", operator: "EQUAL", value: "out of stock" }])
       )}&fields=id,name,retailer_id,availability&limit=10&access_token=${tok}`;
       const errorProducts = safeParseJSON(await (await fetch(errorProductsUrl)).text()) as Record<string, unknown>;
-      return {
-        catalog: catalogData,
-        sample_out_of_stock_products: (errorProducts as Record<string, unknown>)?.data ?? [],
-      };
+      return { catalog: catalogData, sample_out_of_stock_products: (errorProducts as Record<string, unknown>)?.data ?? [] };
     }
   }
 
@@ -1407,14 +1398,18 @@ type ClaudeMessage = {
 };
 type ClaudeContentBlock =
   | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
   | { type: "tool_use"; id: string; name: string; input: ToolInput }
   | { type: "tool_result"; tool_use_id: string; content: string };
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   const { messages, meta, google } = (await request.json()) as {
-    messages: Array<{ role: string; content: string }>;
-    meta?: { accessToken: string; adAccountId: string };
+    messages: Array<{
+      role: string;
+      content: string | Array<{ type: string; [key: string]: unknown }>;
+    }>;
+    meta?: { accessToken: string; adAccountId: string; pageId?: string | null; pixelId?: string | null };
     google?: { accessToken: string; customerId: string };
   };
 
@@ -1424,9 +1419,14 @@ export async function POST(request: NextRequest) {
   const creds: Credentials = { meta, google };
   const availableTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
   const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
+
+  // Build system context including connected page and pixel IDs
   const systemWithContext =
     `${SYSTEM_PROMPT}\n\nCONNECTED PLATFORMS: ${connectedPlatforms}.\n` +
-    `${meta ? `Meta Ad Account ID: act_${meta.adAccountId}` : "Meta Ads: NOT CONNECTED"}\n` +
+    `${meta
+      ? `Meta Ad Account ID: act_${meta.adAccountId}${meta.pageId ? `\nConnected Facebook Page ID: ${meta.pageId}` : "\nNo Facebook Page connected — user must select one in the sidebar to create ads."}${meta.pixelId ? `\nConnected Meta Pixel ID: ${meta.pixelId}` : ""}`
+      : "Meta Ads: NOT CONNECTED"
+    }\n` +
     `${google ? `Google Ads Customer ID: ${google.customerId}` : "Google Ads: NOT CONNECTED"}`;
 
   const encoder = new TextEncoder();
@@ -1436,46 +1436,75 @@ export async function POST(request: NextRequest) {
         try { controller.enqueue(encoder.encode(JSON.stringify(data) + "\n")); } catch { /* closed */ }
       };
       try {
-        const claudeMessages: ClaudeMessage[] = messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+        // Convert incoming messages to Claude format, preserving image content blocks
+        const claudeMessages: ClaudeMessage[] = messages.map((m) => {
+          if (Array.isArray(m.content)) {
+            // Already structured content (with image blocks etc.) — pass through
+            return { role: m.role as "user" | "assistant", content: m.content as ClaudeContentBlock[] };
+          }
+          return { role: m.role as "user" | "assistant", content: m.content as string };
+        });
+
         let iteration = 0;
         while (iteration++ < 15) {
           const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
-            body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 4096, system: systemWithContext, tools: availableTools, messages: claudeMessages }),
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model: CLAUDE_MODEL,
+              max_tokens: 4096,
+              system: systemWithContext,
+              tools: availableTools,
+              messages: claudeMessages,
+            }),
           });
+
           if (!claudeRes.ok) {
             const err = await claudeRes.json().catch(() => ({ message: claudeRes.statusText }));
             send({ type: "error", text: `Claude API error ${claudeRes.status}: ${JSON.stringify(err)}` });
             break;
           }
+
           const { content, stop_reason } = (await claudeRes.json()) as { content: ClaudeContentBlock[]; stop_reason: string };
+
           for (const block of content) {
-            if (block.type === "text" && block.text.trim()) send({ type: "text", text: block.text });
+            if (block.type === "text" && (block as { type: "text"; text: string }).text.trim()) {
+              send({ type: "text", text: (block as { type: "text"; text: string }).text });
+            }
           }
+
           if (stop_reason === "end_turn") break;
+
           if (stop_reason === "tool_use") {
             claudeMessages.push({ role: "assistant", content });
             const toolResults: ClaudeContentBlock[] = [];
+
             for (const block of content) {
               if (block.type !== "tool_use") continue;
-              const platform = block.name.startsWith("meta_") ? "meta" : "google";
-              send({ type: "tool_call", tool: block.name, platform, input: block.input, text: fmtCall(block.name, block.input) });
+              const toolBlock = block as { type: "tool_use"; id: string; name: string; input: ToolInput };
+              const platform = toolBlock.name.startsWith("meta_") ? "meta" : "google";
+              send({ type: "tool_call", tool: toolBlock.name, platform, input: toolBlock.input, text: fmtCall(toolBlock.name, toolBlock.input) });
               send({ type: "ping" });
+
               let resultText: string;
-              const timeout = block.name === "meta_upload_ad_image" ? 120_000 : 30_000;
+              const timeout = toolBlock.name === "meta_upload_ad_image" ? 120_000 : 30_000;
               try {
                 const result = await Promise.race([
-                  executeTool(block.name, block.input, creds),
-                  new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool ${block.name} timed out`)), timeout)),
+                  executeTool(toolBlock.name, toolBlock.input, creds),
+                  new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool ${toolBlock.name} timed out`)), timeout)),
                 ]);
                 resultText = JSON.stringify(result);
-                send({ type: "tool_result", tool: block.name, platform, text: fmtResult(block.name, result), data: result });
+                send({ type: "tool_result", tool: toolBlock.name, platform, text: fmtResult(toolBlock.name, result), data: result });
               } catch (err) {
                 resultText = JSON.stringify({ error: String(err) });
                 send({ type: "error", text: "Tool error: " + String(err) });
               }
-              toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultText });
+
+              toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: resultText });
             }
             claudeMessages.push({ role: "user", content: toolResults });
             continue;
@@ -1501,7 +1530,6 @@ function fmtCall(name: string, i: ToolInput): string {
   const metaCents = (c: unknown) => `$${((c as number) / 100).toFixed(2)}`;
   const googleMicros = (m: unknown) => `$${((m as number) / 1_000_000).toFixed(2)}`;
   const map: Record<string, string> = {
-    // Existing
     meta_list_campaigns: "Fetching Meta campaigns…",
     meta_get_campaign_insights: `Fetching Meta insights (${i.date_preset})…`,
     meta_create_campaign: `Creating Meta campaign "${i.name}"…`,
@@ -1518,14 +1546,12 @@ function fmtCall(name: string, i: ToolInput): string {
     meta_upload_ad_image: `Uploading image "${i.image_filename}" to Meta…`,
     meta_create_ad: `Creating Meta ${i.image_hash ? "image" : "text/link"} ad "${i.name}"…`,
     meta_list_custom_audiences: "Fetching Meta custom audiences…",
-    // Business Asset User Profile
     meta_get_user_profile: "Fetching authenticated user profile…",
     meta_list_businesses: "Fetching Business Manager portfolios…",
     meta_list_business_ad_accounts: `Fetching ad accounts for business ${i.business_id}…`,
     meta_list_business_pages: `Fetching Pages for business ${i.business_id}…`,
     meta_list_business_pixels: `Fetching Pixels for business ${i.business_id}…`,
     meta_get_business_user: `Fetching business users for ${i.business_id}…`,
-    // Catalog Management
     meta_list_catalogs: `Fetching catalogs for business ${i.business_id}…`,
     meta_create_catalog: `Creating catalog "${i.name}"…`,
     meta_get_catalog: `Fetching catalog ${i.catalog_id} details…`,
@@ -1534,7 +1560,6 @@ function fmtCall(name: string, i: ToolInput): string {
     meta_list_catalog_products: `Fetching products from catalog ${i.catalog_id}…`,
     meta_update_catalog_product: `Updating product ${i.retailer_id} in catalog ${i.catalog_id}…`,
     meta_get_catalog_diagnostics: `Running diagnostics on catalog ${i.catalog_id}…`,
-    // Google
     google_list_campaigns: "Fetching Google Ads campaigns…",
     google_get_campaign_metrics: `Fetching Google Ads metrics (${i.date_range})…`,
     google_create_campaign: `Creating Google Ads campaign "${i.name}"…`,
@@ -1562,6 +1587,7 @@ function fmtResult(name: string, result: unknown): string {
     r?.product_sets as unknown[] || r?.pages as unknown[] || r?.pixels as unknown[] ||
     r?.business_users as unknown[] || r?.owned_ad_accounts as unknown[];
   const count = Array.isArray(data) ? data.length : undefined;
+  if (name === "meta_upload_ad_image") return r?.image_hash ? `Uploaded ✓ hash: ${r.image_hash}` : `Upload failed: ${JSON.stringify(r.raw ?? r)}`;
   if (name === "meta_search_interests") return `Found ${count ?? "?"} interest${count !== 1 ? "s" : ""}`;
   if (name === "meta_list_businesses") return `Found ${r?.count ?? "?"} Business Manager(s)`;
   if (name === "meta_list_business_ad_accounts") return `Found ${(r?.total as number) ?? "?"} ad account(s)`;
