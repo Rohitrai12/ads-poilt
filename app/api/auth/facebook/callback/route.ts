@@ -1,4 +1,3 @@
-// app/api/auth/facebook/callback/route.ts
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
@@ -59,13 +58,11 @@ export async function GET(request: NextRequest) {
 
   // ── 3. Fetch ALL resources in parallel ───────────────────────────────────
   const [acctRes, pagesRes] = await Promise.all([
-    // Ad accounts — include owner info to help user identify them
     fetch(
       `https://graph.facebook.com/${META_VERSION}/me/adaccounts` +
         `?fields=id,name,account_status,currency,timezone_name,business` +
         `&limit=50&access_token=${accessToken}`
     ),
-    // Facebook Pages the user manages
     fetch(
       `https://graph.facebook.com/${META_VERSION}/me/accounts` +
         `?fields=id,name,category,picture` +
@@ -81,12 +78,10 @@ export async function GET(request: NextRequest) {
   const adAccounts = acctData.data ?? [];
   const pages = pagesData.data ?? [];
 
-  // ── 4. For each page, fetch its associated Pixel(s) ──────────────────────
-  // Pixels are tied to the ad account, not the page — fetch from ad accounts
-  // We batch-fetch pixels for all active ad accounts
+  // ── 4. Fetch pixels for active ad accounts ────────────────────────────────
   const pixelPromises = adAccounts
     .filter((a: { account_status: number }) => a.account_status === 1)
-    .slice(0, 10) // cap at 10 accounts to avoid rate limits
+    .slice(0, 10)
     .map(async (account: { id: string }) => {
       const pixelRes = await fetch(
         `https://graph.facebook.com/${META_VERSION}/${account.id}/adspixels` +
@@ -107,9 +102,9 @@ export async function GET(request: NextRequest) {
     )
     .flatMap((r) => r.value);
 
-  // ── 5. Redirect with all data — user picks in the UI ─────────────────────
-  // NOTE: We intentionally do NOT auto-select an account here.
-  // The frontend will show a picker modal when fb_pending_selection=1.
+  // ── 5. Redirect — data stored in cookie only (fixes Safari URL-length bug) ─
+  // Safari fails to redirect when the URL exceeds ~8KB.
+  // We dropped fb_data from the URL entirely and rely solely on the cookie.
   const payload = JSON.stringify({
     accessToken,
     adAccounts,
@@ -119,17 +114,16 @@ export async function GET(request: NextRequest) {
 
   const params = new URLSearchParams({
     fb_pending_selection: "1",
-    fb_data: encodeURIComponent(payload),
+    // ❌ fb_data removed — was causing Safari "Cannot open page" on redirect
   });
 
-  // Store full payload in a short-lived cookie (picker reads it, then clears it)
   const response = NextResponse.redirect(`${origin}/dashboard/chat?${params}`);
   response.cookies.set("meta_ads_pending", payload, {
-    httpOnly: false,
+    httpOnly: false, // must be false so the picker can read it via JS
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 10, // 10 minutes — just long enough to pick an account
+    maxAge: 60 * 10, // 10 minutes
   });
 
   return response;

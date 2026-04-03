@@ -105,6 +105,8 @@ function redirectToFb() {
     `&state=${state}&response_type=code`;
 }
 
+
+
 function redirectToGoogle() {
   if (!GOOGLE_CLIENT_ID) return;
   const state = Math.random().toString(36).slice(2);
@@ -945,6 +947,32 @@ const ANIM = `
 @keyframes cooldownPulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
 `;
 
+// ── Utility: read and clear the meta_ads_pending cookie ──────────────────
+function consumeMetaPendingCookie(): {
+  accessToken: string;
+  adAccounts: object[];
+  pages: object[];
+  pixels: object[];
+  
+} | null {
+  if (typeof document === "undefined") return null;
+
+  const match = document.cookie.match(
+    /(^|;\s*)meta_ads_pending=([^;]+)/
+  );
+  if (!match) return null;
+
+  try {
+    const data = JSON.parse(decodeURIComponent(match[2]));
+    // Clear the cookie immediately after reading
+    document.cookie =
+      "meta_ads_pending=; path=/; max-age=0; samesite=lax";
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 function UnifiedAdsChatInner() {
   const [messages,         setMessages]         = useState<Message[]>([]);
@@ -1016,6 +1044,7 @@ function UnifiedAdsChatInner() {
     } catch { /**/ }
 
     const params = new URLSearchParams(window.location.search);
+    
 
     const fbPending = params.get("fb_pending_selection");
     const fbDataRaw = params.get("fb_data");
