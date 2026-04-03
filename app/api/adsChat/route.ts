@@ -11,7 +11,7 @@ const META_BASE = `https://graph.facebook.com/${META_VERSION}`;
 const GOOGLE_ADS_VERSION = "v18";
 const GOOGLE_ADS_BASE = `https://googleads.googleapis.com/${GOOGLE_ADS_VERSION}`;
 
-const AUTO_BID_CAP_CENTS = 500; // default dummy/test bid cap in cents
+const AUTO_BID_CAP_CENTS = 500;
 
 // ─── BigInt-safe JSON ─────────────────────────────────────────────────────────
 function safeParseJSON(text: string): unknown {
@@ -23,7 +23,7 @@ function safeParseJSON(text: string): unknown {
 const SYSTEM_PROMPT = `You are an expert unified Ad Manager AI that manages BOTH Meta Ads (Facebook/Instagram) AND Google Ads campaigns through natural language in a single conversation.
 
 You manage the full hierarchy for each platform:
-- META: Campaigns → Ad Sets → Ads, Custom Audiences, image uploads
+- META: Campaigns → Ad Sets → Ads, Custom Audiences, image uploads, Business Assets, Product Catalogs
 - GOOGLE: Campaigns → Ad Groups → Ads → Keywords, Audiences, GAQL reports
 
 PLATFORM PREFIXES: All tool names are prefixed:
@@ -69,10 +69,13 @@ BEHAVIORAL RULES:
     - If user requests a bid cap: set bid_strategy = LOWEST_COST_WITH_BID_CAP and bid_amount_cents = the amount.
     - If user requests target cost: set bid_strategy = COST_CAP and bid_amount_cents = the target.
     - NEVER set bid_strategy to a capped type without also providing bid_amount_cents.
-    - NEVER set bid_amount_cents without a matching capped bid_strategy.`;
+    - NEVER set bid_amount_cents without a matching capped bid_strategy.
+21. BUSINESS ASSETS: Use meta_list_businesses to show the user's business portfolios, then meta_list_business_ad_accounts or meta_list_business_pages to enumerate assets under a specific business. This helps users understand which business owns their ad account and pages.
+22. PRODUCT CATALOGS: Use meta_list_catalogs to list product catalogs under a business. Use meta_create_catalog to create a new catalog. Use meta_list_catalog_products to browse products. Catalogs are required for Dynamic Ads and Advantage+ Shopping Campaigns.`;
 
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
+  // ── Existing campaign tools ───────────────────────────────────────────────
   {
     name: "meta_list_campaigns",
     description: "List all Meta (Facebook/Instagram) campaigns with ID, name, status, objective, budget.",
@@ -93,7 +96,7 @@ const META_TOOLS = [
   {
     name: "meta_create_campaign",
     description:
-      "Create a new Meta campaign (starts PAUSED). ALWAYS pass use_cbo: set true for CBO (campaign-level budget), false for ad-set level budgets. This field is required by the Meta API.",
+      "Create a new Meta campaign (starts PAUSED). ALWAYS pass use_cbo: set true for CBO (campaign-level budget), false for ad-set level budgets.",
     input_schema: {
       type: "object",
       properties: {
@@ -101,23 +104,15 @@ const META_TOOLS = [
         objective: {
           type: "string",
           enum: [
-            "OUTCOME_TRAFFIC",
-            "OUTCOME_LEADS",
-            "OUTCOME_SALES",
-            "OUTCOME_ENGAGEMENT",
-            "OUTCOME_AWARENESS",
-            "OUTCOME_APP_PROMOTION",
+            "OUTCOME_TRAFFIC", "OUTCOME_LEADS", "OUTCOME_SALES",
+            "OUTCOME_ENGAGEMENT", "OUTCOME_AWARENESS", "OUTCOME_APP_PROMOTION",
           ],
         },
         special_ad_category: { type: "string", enum: ["NONE", "EMPLOYMENT", "HOUSING", "CREDIT"] },
-        daily_budget_cents: {
-          type: "number",
-          description: "Campaign-level daily budget in cents. Only for CBO (use_cbo=true).",
-        },
+        daily_budget_cents: { type: "number", description: "Campaign-level daily budget in cents. Only for CBO." },
         use_cbo: {
           type: "boolean",
-          description:
-            "REQUIRED. true = Campaign Budget Optimization (Meta distributes budget across ad sets). false = each ad set controls its own budget.",
+          description: "REQUIRED. true = CBO. false = ad-set level budgets.",
         },
       },
       required: ["name", "objective", "special_ad_category", "use_cbo"],
@@ -171,113 +166,63 @@ const META_TOOLS = [
       required: ["campaign_id"],
     },
   },
-  // ── FIX #2, #3, #4: Added destination_type (required), interests, and explicit bid cap guidance ──
   {
     name: "meta_create_adset",
-    description:
-      "Create a Meta ad set. For real campaigns, collect destination_type, interests, and bid cap preference. For dummy/test setups, the backend can auto-fill a default bid cap. For CBO campaigns, omit daily_budget_cents.",
+    description: "Create a Meta ad set.",
     input_schema: {
       type: "object",
       properties: {
         campaign_id: { type: "string" },
         name: { type: "string" },
-        daily_budget_cents: {
-          type: "number",
-          description: "Daily budget in cents. Omit for CBO campaigns.",
-        },
+        daily_budget_cents: { type: "number", description: "Omit for CBO campaigns." },
         destination_type: {
           type: "string",
-          enum: [
-            "WEBSITE",
-            "APP",
-            "MESSENGER",
-            "INSTAGRAM_DIRECT",
-            "WHATSAPP",
-            "ON_AD",
-            "FACEBOOK",
-            "SHOP_AUTOMATIC",
-          ],
-          description:
-            "REQUIRED. Conversion location — where the ad sends people. Must be collected from the user before creating the ad set.",
+          enum: ["WEBSITE", "APP", "MESSENGER", "INSTAGRAM_DIRECT", "WHATSAPP", "ON_AD", "FACEBOOK", "SHOP_AUTOMATIC"],
+          description: "REQUIRED. Where the ad sends people.",
         },
         targeting_countries: { type: "array", items: { type: "string" } },
         age_min: { type: "number" },
         age_max: { type: "number" },
         interests: {
           type: "array",
-          description:
-            "Interest targeting objects. Each requires id and name. Use meta_search_interests to find IDs from keywords, then confirm selections with the user before including here.",
           items: {
             type: "object",
             properties: {
-              id:   { type: "string", description: "Meta interest ID" },
-              name: { type: "string", description: "Human-readable interest name" },
+              id: { type: "string" },
+              name: { type: "string" },
             },
             required: ["id", "name"],
           },
         },
         optimization_goal: {
           type: "string",
-          // These are the EXACT values Meta's API accepts as of v25.0.
-          // Common mappings: "conversions" → OFFSITE_CONVERSIONS, "app installs" → APP_INSTALLS,
-          // "reach" → REACH, "traffic/clicks" → LINK_CLICKS or LANDING_PAGE_VIEWS,
-          // "leads" → LEAD_GENERATION, "video views" → THRUPLAY, "purchase value" → VALUE.
-          // For OUTCOME_SALES campaigns use OFFSITE_CONVERSIONS or VALUE.
           enum: [
-            "OFFSITE_CONVERSIONS",
-            "LINK_CLICKS",
-            "LANDING_PAGE_VIEWS",
-            "IMPRESSIONS",
-            "REACH",
-            "LEAD_GENERATION",
-            "QUALITY_LEAD",
-            "APP_INSTALLS",
-            "APP_INSTALLS_AND_OFFSITE_CONVERSIONS",
-            "VALUE",
-            "THRUPLAY",
-            "POST_ENGAGEMENT",
-            "PAGE_LIKES",
-            "EVENT_RESPONSES",
-            "CONVERSATIONS",
-            "MESSAGING_PURCHASE_CONVERSION",
-            "MESSAGING_APPOINTMENT_CONVERSION",
-            "ENGAGED_USERS",
-            "AD_RECALL_LIFT",
+            "OFFSITE_CONVERSIONS", "LINK_CLICKS", "LANDING_PAGE_VIEWS", "IMPRESSIONS",
+            "REACH", "LEAD_GENERATION", "QUALITY_LEAD", "APP_INSTALLS",
+            "APP_INSTALLS_AND_OFFSITE_CONVERSIONS", "VALUE", "THRUPLAY",
+            "POST_ENGAGEMENT", "PAGE_LIKES", "EVENT_RESPONSES", "CONVERSATIONS",
+            "MESSAGING_PURCHASE_CONVERSION", "MESSAGING_APPOINTMENT_CONVERSION",
+            "ENGAGED_USERS", "AD_RECALL_LIFT",
           ],
-          description:
-            "Meta API optimization goal. For OUTCOME_SALES → use OFFSITE_CONVERSIONS or VALUE. For OUTCOME_TRAFFIC → use LINK_CLICKS or LANDING_PAGE_VIEWS. For OUTCOME_LEADS → use LEAD_GENERATION. For OUTCOME_AWARENESS → use REACH or IMPRESSIONS. For OUTCOME_ENGAGEMENT → use POST_ENGAGEMENT or PAGE_LIKES.",
         },
         billing_event: { type: "string", enum: ["IMPRESSIONS", "LINK_CLICKS"] },
         bid_strategy: {
           type: "string",
           enum: ["LOWEST_COST_WITHOUT_CAP", "LOWEST_COST_WITH_BID_CAP", "COST_CAP"],
-          description:
-            "Bidding strategy. Real campaigns can use LOWEST_COST_WITHOUT_CAP. Dummy/test setups may omit bid_strategy and the backend will auto-apply LOWEST_COST_WITH_BID_CAP with a default bid cap. If the user explicitly requests a manual bid cap, use LOWEST_COST_WITH_BID_CAP or COST_CAP and provide bid_amount_cents.",
         },
-        bid_amount_cents: {
-          type: "number",
-          description:
-            "Manual bid cap in cents. If omitted for a dummy/test setup, the backend can auto-add a default bid cap. Required when bid_strategy is LOWEST_COST_WITH_BID_CAP or COST_CAP.",
-        },
+        bid_amount_cents: { type: "number" },
       },
       required: ["campaign_id", "name", "targeting_countries", "optimization_goal", "billing_event", "destination_type"],
     },
   },
   {
     name: "meta_search_interests",
-    description:
-      "Search Meta's interest targeting library by keyword. Call this when the user mentions interest targeting. Returns matching interests with IDs and audience sizes. Present results to the user and confirm which to add before calling meta_create_adset.",
+    description: "Search Meta's interest targeting library by keyword.",
     input_schema: {
       type: "object",
       properties: {
-        query: {
-          type: "string",
-          description: "Keyword to search interests for, e.g. 'fitness', 'coffee', 'travel'",
-        },
-        limit: {
-          type: "number",
-          description: "Max results to return (default 10, max 25)",
-        },
+        query: { type: "string" },
+        limit: { type: "number" },
       },
       required: ["query"],
     },
@@ -306,7 +251,7 @@ const META_TOOLS = [
   },
   {
     name: "meta_get_ad_insights",
-    description: "Per-ad Meta performance including ad name, impressions, clicks, spend, CTR, CPC, ROAS.",
+    description: "Per-ad Meta performance including spend, CTR, CPC, ROAS.",
     input_schema: {
       type: "object",
       properties: {
@@ -332,8 +277,7 @@ const META_TOOLS = [
   },
   {
     name: "meta_upload_ad_image",
-    description:
-      "Upload an image to the Meta ad account image library. Returns image_hash. Call BEFORE meta_create_ad when user provides an image.",
+    description: "Upload an image to the Meta ad account image library. Returns image_hash.",
     input_schema: {
       type: "object",
       properties: {
@@ -345,8 +289,7 @@ const META_TOOLS = [
   },
   {
     name: "meta_create_ad",
-    description:
-      "Create a Meta ad (image or text/link). WITH image: provide image_hash. WITHOUT image: omit image_hash.",
+    description: "Create a Meta ad (image or text/link).",
     input_schema: {
       type: "object",
       properties: {
@@ -375,13 +318,224 @@ const META_TOOLS = [
     description: "List all Meta custom audiences.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
+
+  // ── NEW: Business Asset User Profile tools ────────────────────────────────
+  {
+    name: "meta_get_user_profile",
+    description:
+      "Get the authenticated user's Meta profile including name, email, and business-related fields. Required for business_asset_user_profile permission. Use this to identify which user is managing the ad account and to verify their identity.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          items: { type: "string" },
+          description: "Fields to fetch. Defaults to id, name, email.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "meta_list_businesses",
+    description:
+      "List all Business Manager portfolios the user has access to (uses /me/businesses). Required for business_asset_user_profile permission. Use this to let users select which Business Portfolio owns their ad accounts and pages before running campaigns.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          items: { type: "string" },
+          description: "Fields to fetch per business (id, name, profile_picture_uri, etc.)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "meta_list_business_ad_accounts",
+    description:
+      "List all ad accounts owned by or accessible to a specific Business Manager (uses /{business-id}/owned_ad_accounts and /{business-id}/client_ad_accounts). Uses business_asset_user_profile to enumerate assets. Helps users select the correct ad account for campaign management.",
+    input_schema: {
+      type: "object",
+      properties: {
+        business_id: { type: "string", description: "The Business Manager ID." },
+        include_client_accounts: {
+          type: "boolean",
+          description: "Whether to also fetch client ad accounts. Default true.",
+        },
+      },
+      required: ["business_id"],
+    },
+  },
+  {
+    name: "meta_list_business_pages",
+    description:
+      "List Facebook Pages owned by a Business Manager (uses /{business-id}/owned_pages). Part of business_asset_user_profile integration. Pages are required when creating Meta ads — this tool helps users identify which Page to associate with their ads.",
+    input_schema: {
+      type: "object",
+      properties: {
+        business_id: { type: "string" },
+      },
+      required: ["business_id"],
+    },
+  },
+  {
+    name: "meta_list_business_pixels",
+    description:
+      "List Meta Pixels (datasets) owned by a Business Manager (uses /{business-id}/owned_pixels). Part of business_asset_user_profile. Pixels are required for conversion tracking on OUTCOME_SALES and OUTCOME_LEADS campaigns.",
+    input_schema: {
+      type: "object",
+      properties: {
+        business_id: { type: "string" },
+      },
+      required: ["business_id"],
+    },
+  },
+  {
+    name: "meta_get_business_user",
+    description:
+      "Get the business user profile for a specific person within a Business Manager (uses /{business-id}/business_users). Uses business_asset_user_profile permission. Helps identify user roles and permissions within a business account.",
+    input_schema: {
+      type: "object",
+      properties: {
+        business_id: { type: "string" },
+      },
+      required: ["business_id"],
+    },
+  },
+
+  // ── NEW: Catalog Management tools ─────────────────────────────────────────
+  {
+    name: "meta_list_catalogs",
+    description:
+      "List all product catalogs owned by a Business Manager (uses /{business-id}/owned_product_catalogs). Requires catalog_management permission. Product catalogs are required for Dynamic Ads and Advantage+ Shopping Campaigns that automatically show relevant products to users.",
+    input_schema: {
+      type: "object",
+      properties: {
+        business_id: { type: "string", description: "The Business Manager ID." },
+      },
+      required: ["business_id"],
+    },
+  },
+  {
+    name: "meta_create_catalog",
+    description:
+      "Create a new product catalog under a Business Manager (POST /{business-id}/owned_product_catalogs). Requires catalog_management permission. A catalog stores your product inventory used for Dynamic Ads — required for e-commerce advertisers who want to retarget users with specific products they viewed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        business_id: { type: "string" },
+        name: { type: "string", description: "Catalog name, e.g. 'Main Product Catalog'" },
+        catalog_type: {
+          type: "string",
+          enum: ["SIMPLE", "AUTOMOTIVE", "HOTELS", "FLIGHTS", "DESTINATIONS", "HOME_LISTINGS", "JOBS"],
+          description: "Type of catalog. Use SIMPLE for general e-commerce.",
+        },
+        da_display_settings: {
+          type: "object",
+          description: "Optional dynamic ads display settings.",
+        },
+      },
+      required: ["business_id", "name", "catalog_type"],
+    },
+  },
+  {
+    name: "meta_get_catalog",
+    description:
+      "Get details of a specific product catalog (GET /{catalog-id}). Requires catalog_management. Shows catalog name, product count, and status.",
+    input_schema: {
+      type: "object",
+      properties: {
+        catalog_id: { type: "string" },
+      },
+      required: ["catalog_id"],
+    },
+  },
+  {
+    name: "meta_list_catalog_product_sets",
+    description:
+      "List product sets (subsets of a catalog) for use in dynamic ads (GET /{catalog-id}/product_sets). Requires catalog_management. Product sets let you create ad sets that only show a filtered subset of your catalog — e.g. 'Sale items only' or 'Category: Shoes'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        catalog_id: { type: "string" },
+        limit: { type: "number", description: "Max results (default 25)." },
+      },
+      required: ["catalog_id"],
+    },
+  },
+  {
+    name: "meta_create_product_set",
+    description:
+      "Create a product set (filtered subset) within a catalog (POST /{catalog-id}/product_sets). Requires catalog_management. Use to define which products show in a specific dynamic ad campaign, e.g. filter by category, price range, or availability.",
+    input_schema: {
+      type: "object",
+      properties: {
+        catalog_id: { type: "string" },
+        name: { type: "string" },
+        filter: {
+          type: "object",
+          description:
+            "Filter rules as a Meta product set filter object, e.g. {retailer_id: {is_any: ['SKU1','SKU2']}} or {product_type: {contains: 'shoes'}}",
+        },
+      },
+      required: ["catalog_id", "name", "filter"],
+    },
+  },
+  {
+    name: "meta_list_catalog_products",
+    description:
+      "List products (items) within a catalog (GET /{catalog-id}/products). Requires catalog_management. Lets users verify their product feed is correctly imported before launching Dynamic Ads.",
+    input_schema: {
+      type: "object",
+      properties: {
+        catalog_id: { type: "string" },
+        limit: { type: "number", description: "Max products to return (default 25, max 100)." },
+        filter_equal: {
+          type: "object",
+          description: "Optional field:value filters, e.g. {availability: 'in stock'}",
+        },
+      },
+      required: ["catalog_id"],
+    },
+  },
+  {
+    name: "meta_update_catalog_product",
+    description:
+      "Update a specific product in a catalog (POST /{catalog-id}/items_batch). Requires catalog_management. Lets users update price, availability, or description of products directly from the ad management interface.",
+    input_schema: {
+      type: "object",
+      properties: {
+        catalog_id: { type: "string" },
+        retailer_id: { type: "string", description: "The product's retailer ID (SKU)." },
+        updates: {
+          type: "object",
+          description: "Fields to update, e.g. {price: '29.99 USD', availability: 'in stock'}",
+        },
+      },
+      required: ["catalog_id", "retailer_id", "updates"],
+    },
+  },
+  {
+    name: "meta_get_catalog_diagnostics",
+    description:
+      "Get diagnostics and issues for a product catalog (GET /{catalog-id}/check_batch_request_status or catalog insights). Requires catalog_management. Helps users identify and fix feed issues (missing images, invalid prices) that prevent products from being served in ads.",
+    input_schema: {
+      type: "object",
+      properties: {
+        catalog_id: { type: "string" },
+      },
+      required: ["catalog_id"],
+    },
+  },
 ];
 
 // ─── GOOGLE TOOLS ─────────────────────────────────────────────────────────────
 const GOOGLE_TOOLS = [
   {
     name: "google_list_campaigns",
-    description: "List all Google Ads campaigns with resource name, status, budget, bidding strategy.",
+    description: "List all Google Ads campaigns.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -413,10 +567,7 @@ const GOOGLE_TOOLS = [
         daily_budget_micros: { type: "number" },
         bidding_strategy: {
           type: "string",
-          enum: [
-            "MANUAL_CPC", "MAXIMIZE_CLICKS", "MAXIMIZE_CONVERSIONS",
-            "TARGET_CPA", "TARGET_ROAS", "MAXIMIZE_CONVERSION_VALUE",
-          ],
+          enum: ["MANUAL_CPC", "MAXIMIZE_CLICKS", "MAXIMIZE_CONVERSIONS", "TARGET_CPA", "TARGET_ROAS", "MAXIMIZE_CONVERSION_VALUE"],
         },
         target_cpa_micros: { type: "number" },
         target_roas: { type: "number" },
@@ -439,7 +590,7 @@ const GOOGLE_TOOLS = [
   },
   {
     name: "google_update_campaign_status",
-    description: "Change Google Ads campaign status: ENABLED, PAUSED, or REMOVED.",
+    description: "Change Google Ads campaign status.",
     input_schema: {
       type: "object",
       properties: {
@@ -491,7 +642,7 @@ const GOOGLE_TOOLS = [
   },
   {
     name: "google_list_keywords",
-    description: "List keywords in a Google Ads ad group with match type, bid, Quality Score.",
+    description: "List keywords in a Google Ads ad group.",
     input_schema: {
       type: "object",
       properties: { ad_group_id: { type: "string" } },
@@ -523,7 +674,7 @@ const GOOGLE_TOOLS = [
   },
   {
     name: "google_list_ads",
-    description: "List Google Ads ads in an ad group with headlines, descriptions, URLs.",
+    description: "List Google Ads ads in an ad group.",
     input_schema: {
       type: "object",
       properties: { ad_group_id: { type: "string" } },
@@ -545,7 +696,7 @@ const GOOGLE_TOOLS = [
   },
   {
     name: "google_create_responsive_search_ad",
-    description: "Create a Google Responsive Search Ad (RSA) with 3–15 headlines and 2–4 descriptions.",
+    description: "Create a Google RSA with 3–15 headlines and 2–4 descriptions.",
     input_schema: {
       type: "object",
       properties: {
@@ -561,7 +712,7 @@ const GOOGLE_TOOLS = [
   },
   {
     name: "google_get_search_terms_report",
-    description: "Google Ads search terms that triggered your ads — find negative keyword opportunities.",
+    description: "Google Ads search terms — find negative keyword opportunities.",
     input_schema: {
       type: "object",
       properties: {
@@ -585,12 +736,17 @@ const GOOGLE_TOOLS = [
   },
 ];
 
-// ─── Tool executor ────────────────────────────────────────────────────────────
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
 type ToolInput = Record<string, unknown>;
 type Credentials = {
   meta?: { accessToken: string; adAccountId: string };
   google?: { accessToken: string; customerId: string };
 };
+
+async function metaGet(url: string): Promise<unknown> {
+  const res = await fetch(url);
+  return safeParseJSON(await res.text());
+}
 
 async function metaPost(url: string, params: URLSearchParams): Promise<unknown> {
   const res = await fetch(url, {
@@ -605,6 +761,18 @@ async function metaPostForm(url: string, fields: Record<string, string>): Promis
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   const res = await fetch(url, { method: "POST", body: form });
+  return safeParseJSON(await res.text());
+}
+
+async function metaPostJSON(url: string, body: unknown, tok: string): Promise<unknown> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${tok}`,
+    },
+    body: JSON.stringify(body),
+  });
   return safeParseJSON(await res.text());
 }
 
@@ -634,11 +802,7 @@ async function googleMutate(customerId: string, operations: unknown[], accessTok
   return res.json();
 }
 
-async function googleBudgetMutate(
-  customerId: string,
-  operations: unknown[],
-  accessToken: string
-): Promise<unknown> {
+async function googleBudgetMutate(customerId: string, operations: unknown[], accessToken: string): Promise<unknown> {
   const res = await fetch(`${GOOGLE_ADS_BASE}/customers/${customerId}/campaignBudgets:mutate`, {
     method: "POST",
     headers: {
@@ -651,7 +815,9 @@ async function googleBudgetMutate(
   return res.json();
 }
 
+// ─── Tool executor ────────────────────────────────────────────────────────────
 async function executeTool(name: string, input: ToolInput, creds: Credentials): Promise<unknown> {
+
   // ── META TOOLS ────────────────────────────────────────────────────────────
   if (name.startsWith("meta_")) {
     if (!creds.meta)
@@ -659,6 +825,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     const { accessToken: tok, adAccountId } = creds.meta;
     const acct = `act_${adAccountId}`;
 
+    // ── Existing tools ───────────────────────────────────────────────────────
     if (name === "meta_list_campaigns") {
       const res = await fetch(
         `${META_BASE}/${acct}/campaigns?fields=id,name,status,objective,daily_budget,lifetime_budget&access_token=${tok}`
@@ -668,8 +835,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_get_campaign_insights") {
       const { date_preset, campaign_ids } = input as { date_preset: string; campaign_ids?: string[] };
-      const fields =
-        "campaign_id,campaign_name,impressions,clicks,spend,ctr,cpc,actions,action_values,purchase_roas";
+      const fields = "campaign_id,campaign_name,impressions,clicks,spend,ctr,cpc,actions,action_values,purchase_roas";
       let url = `${META_BASE}/${acct}/insights?fields=${fields}&level=campaign&date_preset=${date_preset}&access_token=${tok}`;
       if (campaign_ids?.length)
         url += `&filtering=${encodeURIComponent(
@@ -678,163 +844,84 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return safeParseJSON(await (await fetch(url)).text());
     }
 
-    // ── FIX #1: Inverted is_adset_budget_sharing_enabled logic ──────────────
-    // CBO (use_cbo=true)  → campaign owns budget → adsets do NOT share independently → "false"
-    // ABO (use_cbo=false) → each adset owns its own budget → adset budget sharing enabled → "true"
     if (name === "meta_create_campaign") {
       const { name: n, objective, special_ad_category, daily_budget_cents, use_cbo } = input as {
-        name: string;
-        objective: string;
-        special_ad_category: string;
-        daily_budget_cents?: number;
-        use_cbo?: boolean;
+        name: string; objective: string; special_ad_category: string;
+        daily_budget_cents?: number; use_cbo?: boolean;
       };
-
       const isAdsetBudgetSharing = use_cbo === true ? "false" : "true";
-
       const p = new URLSearchParams({
-        name: n,
-        objective,
-        status: "PAUSED",
+        name: n, objective, status: "PAUSED",
         special_ad_categories: JSON.stringify([special_ad_category]),
         is_adset_budget_sharing_enabled: isAdsetBudgetSharing,
         access_token: tok,
       });
-
       if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
-
       return metaPost(`${META_BASE}/${acct}/campaigns`, p);
     }
 
     if (name === "meta_update_campaign_budget") {
-      const { campaign_id, new_daily_budget_cents } = input as {
-        campaign_id: string;
-        new_daily_budget_cents: number;
-      };
-      return metaPost(
-        `${META_BASE}/${String(campaign_id)}`,
-        new URLSearchParams({
-          daily_budget: String(Math.round(new_daily_budget_cents)),
-          access_token: tok,
-        })
-      );
+      const { campaign_id, new_daily_budget_cents } = input as { campaign_id: string; new_daily_budget_cents: number };
+      return metaPost(`${META_BASE}/${String(campaign_id)}`, new URLSearchParams({
+        daily_budget: String(Math.round(new_daily_budget_cents)), access_token: tok,
+      }));
     }
 
     if (name === "meta_update_campaign_status") {
       const { campaign_id, status } = input as { campaign_id: string; status: string };
-      return metaPost(
-        `${META_BASE}/${String(campaign_id)}`,
-        new URLSearchParams({ status, access_token: tok })
-      );
+      return metaPost(`${META_BASE}/${String(campaign_id)}`, new URLSearchParams({ status, access_token: tok }));
     }
 
     if (name === "meta_bulk_update_campaign_status") {
       const { campaign_ids, status } = input as { campaign_ids: string[]; status: string };
       const results = await Promise.all(
         campaign_ids.map(async (id) => {
-          const data = await metaPost(
-            `${META_BASE}/${String(id)}`,
-            new URLSearchParams({ status, access_token: tok })
-          );
+          const data = await metaPost(`${META_BASE}/${String(id)}`, new URLSearchParams({ status, access_token: tok }));
           return { campaign_id: id, ...(data as object) };
         })
       );
-      return {
-        results,
-        succeeded: results.filter((r) => (r as Record<string, unknown>).success).length,
-        total: campaign_ids.length,
-      };
+      return { results, succeeded: results.filter((r) => (r as Record<string, unknown>).success).length, total: campaign_ids.length };
     }
 
     if (name === "meta_list_adsets") {
       const { campaign_id } = input as { campaign_id: string };
       const res = await fetch(
-        `${META_BASE}/${String(
-          campaign_id
-        )}/adsets?fields=id,name,status,daily_budget,targeting,optimization_goal&access_token=${tok}`
+        `${META_BASE}/${String(campaign_id)}/adsets?fields=id,name,status,daily_budget,targeting,optimization_goal&access_token=${tok}`
       );
       return safeParseJSON(await res.text());
     }
 
-    // ── destination_type, interests, bid_strategy, correct optimization_goal ──
     if (name === "meta_create_adset") {
       const {
-        campaign_id,
-        name: n,
-        daily_budget_cents,
-        destination_type,
-        targeting_countries,
-        age_min,
-        age_max,
-        interests,
-        optimization_goal,
-        billing_event,
-        bid_strategy,
-        bid_amount_cents,
+        campaign_id, name: n, daily_budget_cents, destination_type, targeting_countries,
+        age_min, age_max, interests, optimization_goal, billing_event, bid_strategy, bid_amount_cents,
       } = input as {
-        campaign_id: string;
-        name: string;
-        daily_budget_cents?: number;
-        destination_type?: string;
-        targeting_countries: string[];
-        age_min?: number;
-        age_max?: number;
-        interests?: Array<{ id: string; name: string }>;
-        optimization_goal: string;
-        billing_event: string;
-        bid_strategy?: string;
-        bid_amount_cents?: number;
+        campaign_id: string; name: string; daily_budget_cents?: number; destination_type?: string;
+        targeting_countries: string[]; age_min?: number; age_max?: number;
+        interests?: Array<{ id: string; name: string }>; optimization_goal: string;
+        billing_event: string; bid_strategy?: string; bid_amount_cents?: number;
       };
-
-      // Server-side remap: correct any hallucinated optimization_goal values
-      const GOAL_REMAP: Record<string, string> = {
-        CONVERSIONS: "OFFSITE_CONVERSIONS",
-        APP_INSTALLS: "APP_INSTALLS",
-      };
+      const GOAL_REMAP: Record<string, string> = { CONVERSIONS: "OFFSITE_CONVERSIONS" };
       const effectiveGoal = GOAL_REMAP[optimization_goal] ?? optimization_goal;
-
       const targeting: Record<string, unknown> = {
         geo_locations: { countries: targeting_countries },
         targeting_automation: { advantage_audience: 0 },
       };
       if (age_min) targeting.age_min = age_min;
       if (age_max) targeting.age_max = age_max;
-
-      // Add interests via flexible_spec if provided
-      if (interests && interests.length > 0) {
-        targeting.flexible_spec = [
-          { interests: interests.map((i) => ({ id: i.id, name: i.name })) },
-        ];
-      }
-
-      const effectiveBilling =
-        effectiveGoal === "LINK_CLICKS" && billing_event === "LINK_CLICKS"
-          ? "IMPRESSIONS"
-          : billing_event;
-
+      if (interests && interests.length > 0)
+        targeting.flexible_spec = [{ interests: interests.map((i) => ({ id: i.id, name: i.name })) }];
+      const effectiveBilling = effectiveGoal === "LINK_CLICKS" && billing_event === "LINK_CLICKS" ? "IMPRESSIONS" : billing_event;
       const p = new URLSearchParams({
-        campaign_id: String(campaign_id),
-        name: n,
-        targeting: JSON.stringify(targeting),
-        optimization_goal: effectiveGoal,
-        billing_event: effectiveBilling,
-        status: "PAUSED",
-        access_token: tok,
+        campaign_id: String(campaign_id), name: n,
+        targeting: JSON.stringify(targeting), optimization_goal: effectiveGoal,
+        billing_event: effectiveBilling, status: "PAUSED", access_token: tok,
       });
-
       if (destination_type) p.set("destination_type", destination_type);
       if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
-
-      // Bid strategy handling:
-      // - Real campaigns can use automatic lowest-cost without cap
-      // - Dummy/test setups auto-add a small cap when the caller does not provide one
-      // - Explicit capped strategies always keep the provided amount
       const cappedStrategies = ["LOWEST_COST_WITH_BID_CAP", "COST_CAP"];
-      const normalizedBidAmount =
-        typeof bid_amount_cents === "number" && Number.isFinite(bid_amount_cents)
-          ? Math.max(1, Math.round(bid_amount_cents))
-          : undefined;
-
+      const normalizedBidAmount = typeof bid_amount_cents === "number" && Number.isFinite(bid_amount_cents)
+        ? Math.max(1, Math.round(bid_amount_cents)) : undefined;
       if (bid_strategy === "LOWEST_COST_WITHOUT_CAP") {
         p.set("bid_strategy", "LOWEST_COST_WITHOUT_CAP");
       } else if (bid_strategy && cappedStrategies.includes(bid_strategy) && normalizedBidAmount) {
@@ -847,27 +934,16 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         p.set("bid_strategy", "LOWEST_COST_WITH_BID_CAP");
         p.set("bid_amount", String(AUTO_BID_CAP_CENTS));
       }
-
-      const result = (await metaPost(
-        `${META_BASE}/${acct}/adsets`,
-        p
-      )) as Record<string, unknown>;
-
-      // CBO auto-retry: if Meta complains about budget conflict, strip budget and retry
+      const result = (await metaPost(`${META_BASE}/${acct}/adsets`, p)) as Record<string, unknown>;
       if (!result?.id) {
         const err = result?.error as Record<string, unknown> | undefined;
-        const isBudgetConflict =
-          String(err?.error_subcode) === "1885621" ||
+        const isBudgetConflict = String(err?.error_subcode) === "1885621" ||
           String(err?.error_user_msg ?? "").toLowerCase().includes("budget");
         if (isBudgetConflict) {
           const p2 = new URLSearchParams({
-            campaign_id: String(campaign_id),
-            name: n,
-            targeting: JSON.stringify(targeting),
-            optimization_goal: effectiveGoal,
-            billing_event: effectiveBilling,
-            status: "PAUSED",
-            access_token: tok,
+            campaign_id: String(campaign_id), name: n,
+            targeting: JSON.stringify(targeting), optimization_goal: effectiveGoal,
+            billing_event: effectiveBilling, status: "PAUSED", access_token: tok,
           });
           if (destination_type) p2.set("destination_type", destination_type);
           if (bid_strategy === "LOWEST_COST_WITHOUT_CAP") {
@@ -880,14 +956,12 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
             p2.set("bid_amount", String(AUTO_BID_CAP_CENTS));
           }
           const r2 = (await metaPost(`${META_BASE}/${acct}/adsets`, p2)) as Record<string, unknown>;
-          if (r2?.id)
-            return { ...r2, auto_fixed: true, note: "CBO campaign — budget managed at campaign level. Default bid cap auto-applied." };
+          if (r2?.id) return { ...r2, auto_fixed: true, note: "CBO campaign — budget managed at campaign level." };
         }
       }
       return result;
     }
 
-    // ── FIX #4: meta_search_interests executor ────────────────────────────────
     if (name === "meta_search_interests") {
       const { query, limit = 10 } = input as { query: string; limit?: number };
       const res = await fetch(
@@ -895,42 +969,28 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       );
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const items = (data?.data as Array<Record<string, unknown>> ?? []).map((i) => ({
-        id:                          String(i.id),
-        name:                        String(i.name),
-        audience_size_lower_bound:   i.audience_size_lower_bound,
-        audience_size_upper_bound:   i.audience_size_upper_bound,
-        topic:                       i.topic,
-        path:                        i.path,
+        id: String(i.id), name: String(i.name),
+        audience_size_lower_bound: i.audience_size_lower_bound,
+        audience_size_upper_bound: i.audience_size_upper_bound,
+        topic: i.topic, path: i.path,
       }));
       return { interests: items, count: items.length };
     }
 
     if (name === "meta_update_adset_status") {
       const { adset_id, status } = input as { adset_id: string; status: string };
-      return metaPost(
-        `${META_BASE}/${String(adset_id)}`,
-        new URLSearchParams({ status, access_token: tok })
-      );
+      return metaPost(`${META_BASE}/${String(adset_id)}`, new URLSearchParams({ status, access_token: tok }));
     }
 
     if (name === "meta_list_ads") {
       const { adset_id } = input as { adset_id: string };
       const fields = "id,name,status,creative{id,name,title,body,image_url,thumbnail_url}";
-      return safeParseJSON(
-        await (
-          await fetch(`${META_BASE}/${String(adset_id)}/ads?fields=${fields}&access_token=${tok}`)
-        ).text()
-      );
+      return safeParseJSON(await (await fetch(`${META_BASE}/${String(adset_id)}/ads?fields=${fields}&access_token=${tok}`)).text());
     }
 
     if (name === "meta_get_ad_insights") {
-      const { adset_id, campaign_id, date_preset } = input as {
-        adset_id?: string;
-        campaign_id?: string;
-        date_preset: string;
-      };
-      const fields =
-        "ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,impressions,clicks,spend,ctr,cpc,actions,action_values,purchase_roas";
+      const { adset_id, campaign_id, date_preset } = input as { adset_id?: string; campaign_id?: string; date_preset: string };
+      const fields = "ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,impressions,clicks,spend,ctr,cpc,actions,action_values,purchase_roas";
       let url: string;
       if (adset_id) {
         url = `${META_BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${encodeURIComponent(
@@ -948,37 +1008,20 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_update_ad_status") {
       const { ad_id, status } = input as { ad_id: string; status: string };
-      return metaPost(
-        `${META_BASE}/${String(ad_id)}`,
-        new URLSearchParams({ status, access_token: tok })
-      );
+      return metaPost(`${META_BASE}/${String(ad_id)}`, new URLSearchParams({ status, access_token: tok }));
     }
 
     if (name === "meta_upload_ad_image") {
-      const { image_base64, image_filename } = input as {
-        image_base64: string;
-        image_filename: string;
-      };
-      if (!image_base64 || image_base64.length < 100)
-        return { error: "image_base64 is empty or too short." };
+      const { image_base64, image_filename } = input as { image_base64: string; image_filename: string };
+      if (!image_base64 || image_base64.length < 100) return { error: "image_base64 is empty or too short." };
       const binary = atob(image_base64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const ext = image_filename.toLowerCase().split(".").pop() ?? "jpg";
-      const mimes: Record<string, string> = {
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        png: "image/png",
-        gif: "image/gif",
-        webp: "image/webp",
-      };
+      const mimes: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
       const form = new FormData();
       form.append("access_token", tok);
-      form.append(
-        "filename",
-        new Blob([bytes], { type: mimes[ext] ?? "image/jpeg" }),
-        image_filename
-      );
+      form.append("filename", new Blob([bytes], { type: mimes[ext] ?? "image/jpeg" }), image_filename);
       const res = await fetch(`${META_BASE}/${acct}/adimages`, { method: "POST", body: form });
       const result = safeParseJSON(await res.text()) as Record<string, unknown>;
       if (result.images) {
@@ -990,32 +1033,13 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     }
 
     if (name === "meta_create_ad") {
-      const {
-        adset_id,
-        name: adName,
-        page_id,
-        image_hash,
-        headline,
-        body,
-        link_url,
-        call_to_action,
-        description,
-      } = input as {
-        adset_id: string;
-        name: string;
-        page_id: string;
-        image_hash?: string;
-        headline: string;
-        body: string;
-        link_url: string;
-        call_to_action: string;
-        description?: string;
+      const { adset_id, name: adName, page_id, image_hash, headline, body, link_url, call_to_action, description } = input as {
+        adset_id: string; name: string; page_id: string; image_hash?: string;
+        headline: string; body: string; link_url: string; call_to_action: string; description?: string;
       };
       const hasImage = image_hash && image_hash.trim().length > 0;
       const linkData: Record<string, unknown> = {
-        link: link_url,
-        message: body,
-        name: headline,
+        link: link_url, message: body, name: headline,
         call_to_action: { type: call_to_action },
       };
       if (description) linkData.description = description;
@@ -1025,42 +1049,186 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         object_story_spec: JSON.stringify({ page_id: String(page_id), link_data: linkData }),
         access_token: tok,
       })) as Record<string, unknown>;
-      if (creativeRes.error)
-        return { error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}` };
+      if (creativeRes.error) return { error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}` };
       const adRes = (await metaPostForm(`${META_BASE}/${acct}/ads`, {
-        name: adName,
-        adset_id: String(adset_id),
+        name: adName, adset_id: String(adset_id),
         creative: JSON.stringify({ creative_id: String(creativeRes.id) }),
-        status: "PAUSED",
-        access_token: tok,
+        status: "PAUSED", access_token: tok,
       })) as Record<string, unknown>;
       if (adRes.id) {
-        const verified = safeParseJSON(
-          await (
-            await fetch(
-              `${META_BASE}/${String(
-                adRes.id
-              )}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`
-            )
-          ).text()
-        ) as Record<string, unknown>;
-        return {
-          success: true,
-          ad_id: adRes.id,
-          status: "PAUSED",
-          ad_type: hasImage ? "image" : "text_link",
-          verified_adset_id: verified?.adset_id,
-          verified_campaign_id: verified?.campaign_id,
-        };
+        const verified = safeParseJSON(await (await fetch(
+          `${META_BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`
+        )).text()) as Record<string, unknown>;
+        return { success: true, ad_id: adRes.id, status: "PAUSED", ad_type: hasImage ? "image" : "text_link", verified_adset_id: verified?.adset_id, verified_campaign_id: verified?.campaign_id };
       }
       return adRes;
     }
 
     if (name === "meta_list_custom_audiences") {
-      const res = await fetch(
-        `${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count&access_token=${tok}`
-      );
+      const res = await fetch(`${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count&access_token=${tok}`);
       return safeParseJSON(await res.text());
+    }
+
+    // ── NEW: Business Asset User Profile tools ──────────────────────────────
+
+    if (name === "meta_get_user_profile") {
+      const { fields = ["id", "name", "email"] } = input as { fields?: string[] };
+      const fieldsStr = (fields as string[]).join(",");
+      const res = await fetch(`${META_BASE}/me?fields=${fieldsStr}&access_token=${tok}`);
+      return safeParseJSON(await res.text());
+    }
+
+    if (name === "meta_list_businesses") {
+      const { fields = ["id", "name", "profile_picture_uri", "link"] } = input as { fields?: string[] };
+      const fieldsStr = (fields as string[]).join(",");
+      const res = await fetch(`${META_BASE}/me/businesses?fields=${fieldsStr}&access_token=${tok}`);
+      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const businesses = (data?.data as Array<Record<string, unknown>>) ?? [];
+      return { businesses, count: businesses.length };
+    }
+
+    if (name === "meta_list_business_ad_accounts") {
+      const { business_id, include_client_accounts = true } = input as { business_id: string; include_client_accounts?: boolean };
+      const fields = "id,name,currency,account_status,business";
+      const ownedRes = safeParseJSON(
+        await (await fetch(`${META_BASE}/${String(business_id)}/owned_ad_accounts?fields=${fields}&access_token=${tok}`)).text()
+      ) as Record<string, unknown>;
+      const owned = (ownedRes?.data as Array<Record<string, unknown>>) ?? [];
+      let client: Array<Record<string, unknown>> = [];
+      if (include_client_accounts) {
+        const clientRes = safeParseJSON(
+          await (await fetch(`${META_BASE}/${String(business_id)}/client_ad_accounts?fields=${fields}&access_token=${tok}`)).text()
+        ) as Record<string, unknown>;
+        client = (clientRes?.data as Array<Record<string, unknown>>) ?? [];
+      }
+      return {
+        owned_ad_accounts: owned,
+        client_ad_accounts: client,
+        total: owned.length + client.length,
+      };
+    }
+
+    if (name === "meta_list_business_pages") {
+      const { business_id } = input as { business_id: string };
+      const fields = "id,name,category,fan_count,verification_status,link";
+      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pages?fields=${fields}&access_token=${tok}`);
+      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const pages = (data?.data as Array<Record<string, unknown>>) ?? [];
+      return { pages, count: pages.length };
+    }
+
+    if (name === "meta_list_business_pixels") {
+      const { business_id } = input as { business_id: string };
+      const fields = "id,name,creation_time,last_fired_time,is_created_by_business";
+      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pixels?fields=${fields}&access_token=${tok}`);
+      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const pixels = (data?.data as Array<Record<string, unknown>>) ?? [];
+      return { pixels, count: pixels.length };
+    }
+
+    if (name === "meta_get_business_user") {
+      const { business_id } = input as { business_id: string };
+      const fields = "id,name,email,role,title,business";
+      const res = await fetch(`${META_BASE}/${String(business_id)}/business_users?fields=${fields}&access_token=${tok}`);
+      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const users = (data?.data as Array<Record<string, unknown>>) ?? [];
+      return { business_users: users, count: users.length };
+    }
+
+    // ── NEW: Catalog Management tools ────────────────────────────────────────
+
+    if (name === "meta_list_catalogs") {
+      const { business_id } = input as { business_id: string };
+      const fields = "id,name,business,product_count,da_display_settings,destination_catalog_settings,catalog_store";
+      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_product_catalogs?fields=${fields}&access_token=${tok}`);
+      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const catalogs = (data?.data as Array<Record<string, unknown>>) ?? [];
+      return { catalogs, count: catalogs.length };
+    }
+
+    if (name === "meta_create_catalog") {
+      const { business_id, name: catalogName, catalog_type, da_display_settings } = input as {
+        business_id: string; name: string; catalog_type: string; da_display_settings?: object;
+      };
+      const p = new URLSearchParams({
+        name: catalogName, vertical: catalog_type, access_token: tok,
+      });
+      if (da_display_settings) p.set("da_display_settings", JSON.stringify(da_display_settings));
+      return metaPost(`${META_BASE}/${String(business_id)}/owned_product_catalogs`, p);
+    }
+
+    if (name === "meta_get_catalog") {
+      const { catalog_id } = input as { catalog_id: string };
+      const fields = "id,name,business,product_count,da_display_settings,vertical";
+      const res = await fetch(`${META_BASE}/${String(catalog_id)}?fields=${fields}&access_token=${tok}`);
+      return safeParseJSON(await res.text());
+    }
+
+    if (name === "meta_list_catalog_product_sets") {
+      const { catalog_id, limit = 25 } = input as { catalog_id: string; limit?: number };
+      const fields = "id,name,product_count,filter,retailer_id";
+      const res = await fetch(
+        `${META_BASE}/${String(catalog_id)}/product_sets?fields=${fields}&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`
+      );
+      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const productSets = (data?.data as Array<Record<string, unknown>>) ?? [];
+      return { product_sets: productSets, count: productSets.length };
+    }
+
+    if (name === "meta_create_product_set") {
+      const { catalog_id, name: setName, filter } = input as { catalog_id: string; name: string; filter: object };
+      const p = new URLSearchParams({
+        name: setName,
+        filter: JSON.stringify(filter),
+        access_token: tok,
+      });
+      return metaPost(`${META_BASE}/${String(catalog_id)}/product_sets`, p);
+    }
+
+    if (name === "meta_list_catalog_products") {
+      const { catalog_id, limit = 25, filter_equal } = input as {
+        catalog_id: string; limit?: number; filter_equal?: Record<string, string>;
+      };
+      const fields = "id,name,retailer_id,availability,price,currency,image_url,url,brand,description,condition";
+      let url = `${META_BASE}/${String(catalog_id)}/products?fields=${fields}&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`;
+      if (filter_equal && Object.keys(filter_equal).length > 0) {
+        const filterArr = Object.entries(filter_equal).map(([key, value]) => ({ field: key, operator: "EQUAL", value }));
+        url += `&filter=${encodeURIComponent(JSON.stringify(filterArr))}`;
+      }
+      const data = safeParseJSON(await (await fetch(url)).text()) as Record<string, unknown>;
+      const products = (data?.data as Array<Record<string, unknown>>) ?? [];
+      return { products, count: products.length };
+    }
+
+    if (name === "meta_update_catalog_product") {
+      const { catalog_id, retailer_id, updates } = input as { catalog_id: string; retailer_id: string; updates: Record<string, unknown> };
+      const payload = {
+        requests: [
+          {
+            method: "UPDATE",
+            retailer_id: retailer_id,
+            data: updates,
+          },
+        ],
+      };
+      return metaPostJSON(`${META_BASE}/${String(catalog_id)}/items_batch?access_token=${tok}`, payload, tok);
+    }
+
+    if (name === "meta_get_catalog_diagnostics") {
+      const { catalog_id } = input as { catalog_id: string };
+      // Fetch catalog-level issue summary
+      const fields = "id,name,product_count,da_display_settings";
+      const diagnosticsUrl = `${META_BASE}/${String(catalog_id)}?fields=${fields},product_issues&access_token=${tok}`;
+      const catalogData = safeParseJSON(await (await fetch(diagnosticsUrl)).text()) as Record<string, unknown>;
+      // Also fetch a sample of products with errors
+      const errorProductsUrl = `${META_BASE}/${String(catalog_id)}/products?filter=${encodeURIComponent(
+        JSON.stringify([{ field: "availability", operator: "EQUAL", value: "out of stock" }])
+      )}&fields=id,name,retailer_id,availability&limit=10&access_token=${tok}`;
+      const errorProducts = safeParseJSON(await (await fetch(errorProductsUrl)).text()) as Record<string, unknown>;
+      return {
+        catalog: catalogData,
+        sample_out_of_stock_products: (errorProducts as Record<string, unknown>)?.data ?? [],
+      };
     }
   }
 
@@ -1079,10 +1247,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     }
 
     if (name === "google_get_campaign_metrics") {
-      const { date_range, campaign_ids } = input as {
-        date_range: string;
-        campaign_ids?: string[];
-      };
+      const { date_range, campaign_ids } = input as { date_range: string; campaign_ids?: string[] };
       let where = `segments.date DURING ${date_range}`;
       if (campaign_ids?.length)
         where += ` AND campaign.id IN (${campaign_ids.map((id) => `'${id}'`).join(",")})`;
@@ -1094,326 +1259,141 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     }
 
     if (name === "google_create_campaign") {
-      const {
-        name: n,
-        advertising_channel_type,
-        daily_budget_micros,
-        bidding_strategy,
-        target_cpa_micros,
-        target_roas,
-      } = input as {
-        name: string;
-        advertising_channel_type: string;
-        daily_budget_micros: number;
-        bidding_strategy: string;
-        target_cpa_micros?: number;
-        target_roas?: number;
+      const { name: n, advertising_channel_type, daily_budget_micros, bidding_strategy, target_cpa_micros, target_roas } = input as {
+        name: string; advertising_channel_type: string; daily_budget_micros: number;
+        bidding_strategy: string; target_cpa_micros?: number; target_roas?: number;
       };
-      const budgetRes = (await googleBudgetMutate(
-        customerId,
-        [
-          {
-            create: {
-              name: `Budget for ${n}`,
-              amount_micros: Math.round(daily_budget_micros),
-              delivery_method: "STANDARD",
-            },
-          },
-        ],
-        tok
-      )) as Record<string, unknown>;
-      const budgetRn = (
-        (budgetRes?.results as Array<Record<string, unknown>>)?.[0]?.resourceName
-      ) as string | undefined;
+      const budgetRes = (await googleBudgetMutate(customerId, [{
+        create: { name: `Budget for ${n}`, amount_micros: Math.round(daily_budget_micros), delivery_method: "STANDARD" },
+      }], tok)) as Record<string, unknown>;
+      const budgetRn = ((budgetRes?.results as Array<Record<string, unknown>>)?.[0]?.resourceName) as string | undefined;
       if (!budgetRn) return { error: "Failed to create budget", details: budgetRes };
       const biddingConfig: Record<string, unknown> = {};
       if (bidding_strategy === "MANUAL_CPC") biddingConfig.manualCpc = {};
       else if (bidding_strategy === "MAXIMIZE_CLICKS") biddingConfig.maximizeClicks = {};
-      else if (bidding_strategy === "MAXIMIZE_CONVERSIONS")
-        biddingConfig.maximizeConversions = target_cpa_micros
-          ? { targetCpaMicros: Math.round(target_cpa_micros) }
-          : {};
-      else if (bidding_strategy === "TARGET_CPA")
-        biddingConfig.targetCpa = { targetCpaMicros: Math.round(target_cpa_micros ?? 0) };
-      else if (bidding_strategy === "TARGET_ROAS")
-        biddingConfig.targetRoas = { targetRoas: target_roas ?? 1 };
-      else if (bidding_strategy === "MAXIMIZE_CONVERSION_VALUE")
-        biddingConfig.maximizeConversionValue = target_roas ? { targetRoas: target_roas } : {};
-      const campaignRes = (await googleMutate(
-        customerId,
-        [
-          {
-            campaignOperation: {
-              create: {
-                name: n,
-                advertisingChannelType: advertising_channel_type,
-                status: "PAUSED",
-                campaignBudget: budgetRn,
-                networkSettings: {
-                  targetGoogleSearch: advertising_channel_type === "SEARCH",
-                  targetContentNetwork: advertising_channel_type === "DISPLAY",
-                },
-                ...biddingConfig,
-              },
-            },
+      else if (bidding_strategy === "MAXIMIZE_CONVERSIONS") biddingConfig.maximizeConversions = target_cpa_micros ? { targetCpaMicros: Math.round(target_cpa_micros) } : {};
+      else if (bidding_strategy === "TARGET_CPA") biddingConfig.targetCpa = { targetCpaMicros: Math.round(target_cpa_micros ?? 0) };
+      else if (bidding_strategy === "TARGET_ROAS") biddingConfig.targetRoas = { targetRoas: target_roas ?? 1 };
+      else if (bidding_strategy === "MAXIMIZE_CONVERSION_VALUE") biddingConfig.maximizeConversionValue = target_roas ? { targetRoas: target_roas } : {};
+      const campaignRes = (await googleMutate(customerId, [{
+        campaignOperation: {
+          create: {
+            name: n, advertisingChannelType: advertising_channel_type,
+            status: "PAUSED", campaignBudget: budgetRn,
+            networkSettings: { targetGoogleSearch: advertising_channel_type === "SEARCH", targetContentNetwork: advertising_channel_type === "DISPLAY" },
+            ...biddingConfig,
           },
-        ],
-        tok
-      )) as Record<string, unknown>;
-      const rn = (
-        (
-          (campaignRes?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]
-            ?.campaignResult as Record<string, unknown>
-        )?.resourceName
-      ) as string | undefined;
-      return rn
-        ? { success: true, resource_name: rn, status: "PAUSED" }
-        : { error: "Campaign creation failed", details: campaignRes };
+        },
+      }], tok)) as Record<string, unknown>;
+      const rn = (((campaignRes?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]?.campaignResult as Record<string, unknown>)?.resourceName) as string | undefined;
+      return rn ? { success: true, resource_name: rn, status: "PAUSED" } : { error: "Campaign creation failed", details: campaignRes };
     }
 
     if (name === "google_update_campaign_budget") {
-      const { campaign_id, new_daily_budget_micros } = input as {
-        campaign_id: string;
-        new_daily_budget_micros: number;
-      };
-      const current = (await googleQuery(
-        customerId,
-        `SELECT campaign.id, campaign_budget.resource_name FROM campaign WHERE campaign.id = '${String(
-          campaign_id
-        )}'`,
-        tok
-      )) as Record<string, unknown>;
-      const budgetRn = (
-        (current?.results as Array<Record<string, unknown>>)?.[0]?.campaignBudget as Record<
-          string,
-          unknown
-        >
-      )?.resourceName as string | undefined;
+      const { campaign_id, new_daily_budget_micros } = input as { campaign_id: string; new_daily_budget_micros: number };
+      const current = (await googleQuery(customerId, `SELECT campaign.id, campaign_budget.resource_name FROM campaign WHERE campaign.id = '${String(campaign_id)}'`, tok)) as Record<string, unknown>;
+      const budgetRn = ((current?.results as Array<Record<string, unknown>>)?.[0]?.campaignBudget as Record<string, unknown>)?.resourceName as string | undefined;
       if (!budgetRn) return { error: "Could not find budget", details: current };
-      return googleBudgetMutate(
-        customerId,
-        [
-          {
-            update: { resource_name: budgetRn, amount_micros: Math.round(new_daily_budget_micros) },
-            update_mask: "amount_micros",
-          },
-        ],
-        tok
-      );
+      return googleBudgetMutate(customerId, [{ update: { resource_name: budgetRn, amount_micros: Math.round(new_daily_budget_micros) }, update_mask: "amount_micros" }], tok);
     }
 
     if (name === "google_update_campaign_status") {
       const { campaign_id, status } = input as { campaign_id: string; status: string };
-      return googleMutate(
-        customerId,
-        [
-          {
-            campaignOperation: {
-              update: {
-                resource_name: `customers/${customerId}/campaigns/${String(campaign_id)}`,
-                status,
-              },
-              update_mask: "status",
-            },
-          },
-        ],
-        tok
-      );
+      return googleMutate(customerId, [{
+        campaignOperation: { update: { resource_name: `customers/${customerId}/campaigns/${String(campaign_id)}`, status }, update_mask: "status" },
+      }], tok);
     }
 
     if (name === "google_bulk_update_campaign_status") {
       const { campaign_ids, status } = input as { campaign_ids: string[]; status: string };
       const ops = campaign_ids.map((id) => ({
-        campaignOperation: {
-          update: { resource_name: `customers/${customerId}/campaigns/${String(id)}`, status },
-          update_mask: "status",
-        },
+        campaignOperation: { update: { resource_name: `customers/${customerId}/campaigns/${String(id)}`, status }, update_mask: "status" },
       }));
       const res = (await googleMutate(customerId, ops, tok)) as Record<string, unknown>;
-      return {
-        success: true,
-        updated: (res?.mutateOperationResponses as Array<unknown>)?.length ?? 0,
-        total: campaign_ids.length,
-      };
+      return { success: true, updated: (res?.mutateOperationResponses as Array<unknown>)?.length ?? 0, total: campaign_ids.length };
     }
 
     if (name === "google_list_ad_groups") {
       const { campaign_id } = input as { campaign_id: string };
-      return googleQuery(
-        customerId,
-        `SELECT ad_group.id, ad_group.name, ad_group.status, ad_group.type, ad_group.cpc_bid_micros FROM ad_group WHERE campaign.id = '${String(
-          campaign_id
-        )}' AND ad_group.status != 'REMOVED'`,
-        tok
-      );
+      return googleQuery(customerId, `SELECT ad_group.id, ad_group.name, ad_group.status, ad_group.type, ad_group.cpc_bid_micros FROM ad_group WHERE campaign.id = '${String(campaign_id)}' AND ad_group.status != 'REMOVED'`, tok);
     }
 
     if (name === "google_create_ad_group") {
-      const { campaign_id, name: n, cpc_bid_micros, ad_group_type } = input as {
-        campaign_id: string;
-        name: string;
-        cpc_bid_micros: number;
-        ad_group_type: string;
-      };
-      const res = (await googleMutate(
-        customerId,
-        [
-          {
-            adGroupOperation: {
-              create: {
-                name: n,
-                campaign: `customers/${customerId}/campaigns/${String(campaign_id)}`,
-                status: "ENABLED",
-                type: ad_group_type,
-                cpc_bid_micros: Math.round(cpc_bid_micros),
-              },
-            },
-          },
-        ],
-        tok
-      )) as Record<string, unknown>;
-      const rn = (
-        (
-          (res?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]
-            ?.adGroupResult as Record<string, unknown>
-        )?.resourceName
-      ) as string | undefined;
-      return rn
-        ? { success: true, resource_name: rn }
-        : { error: "Ad group creation failed", details: res };
+      const { campaign_id, name: n, cpc_bid_micros, ad_group_type } = input as { campaign_id: string; name: string; cpc_bid_micros: number; ad_group_type: string };
+      const res = (await googleMutate(customerId, [{
+        adGroupOperation: { create: { name: n, campaign: `customers/${customerId}/campaigns/${String(campaign_id)}`, status: "ENABLED", type: ad_group_type, cpc_bid_micros: Math.round(cpc_bid_micros) } },
+      }], tok)) as Record<string, unknown>;
+      const rn = (((res?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]?.adGroupResult as Record<string, unknown>)?.resourceName) as string | undefined;
+      return rn ? { success: true, resource_name: rn } : { error: "Ad group creation failed", details: res };
     }
 
     if (name === "google_list_keywords") {
       const { ad_group_id } = input as { ad_group_id: string };
-      return googleQuery(
-        customerId,
-        `SELECT ad_group_criterion.criterion_id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.status, ad_group_criterion.cpc_bid_micros, ad_group_criterion.quality_info.quality_score FROM ad_group_criterion WHERE ad_group.id = '${String(
-          ad_group_id
-        )}' AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status != 'REMOVED'`,
-        tok
-      );
+      return googleQuery(customerId, `SELECT ad_group_criterion.criterion_id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.status, ad_group_criterion.cpc_bid_micros, ad_group_criterion.quality_info.quality_score FROM ad_group_criterion WHERE ad_group.id = '${String(ad_group_id)}' AND ad_group_criterion.type = 'KEYWORD' AND ad_group_criterion.status != 'REMOVED'`, tok);
     }
 
     if (name === "google_add_keywords") {
-      const { ad_group_id, keywords } = input as {
-        ad_group_id: string;
-        keywords: Array<{ text: string; match_type: string; cpc_bid_micros?: number }>;
-      };
+      const { ad_group_id, keywords } = input as { ad_group_id: string; keywords: Array<{ text: string; match_type: string; cpc_bid_micros?: number }> };
       const ops = keywords.map((kw) => ({
         adGroupCriterionOperation: {
           create: {
             ad_group: `customers/${customerId}/adGroups/${String(ad_group_id)}`,
-            status: "ENABLED",
-            keyword: { text: kw.text, match_type: kw.match_type },
+            status: "ENABLED", keyword: { text: kw.text, match_type: kw.match_type },
             ...(kw.cpc_bid_micros ? { cpc_bid_micros: Math.round(kw.cpc_bid_micros) } : {}),
           },
         },
       }));
       const res = (await googleMutate(customerId, ops, tok)) as Record<string, unknown>;
-      return {
-        success: true,
-        added: (res?.mutateOperationResponses as Array<unknown>)?.length ?? 0,
-        total: keywords.length,
-      };
+      return { success: true, added: (res?.mutateOperationResponses as Array<unknown>)?.length ?? 0, total: keywords.length };
     }
 
     if (name === "google_list_ads") {
       const { ad_group_id } = input as { ad_group_id: string };
-      return googleQuery(
-        customerId,
-        `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status, ad_group_ad.ad.type, ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.ad.final_urls FROM ad_group_ad WHERE ad_group.id = '${String(
-          ad_group_id
-        )}' AND ad_group_ad.status != 'REMOVED'`,
-        tok
-      );
+      return googleQuery(customerId, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status, ad_group_ad.ad.type, ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.ad.final_urls FROM ad_group_ad WHERE ad_group.id = '${String(ad_group_id)}' AND ad_group_ad.status != 'REMOVED'`, tok);
     }
 
     if (name === "google_get_ad_metrics") {
-      const { ad_group_id, campaign_id, date_range } = input as {
-        ad_group_id?: string;
-        campaign_id?: string;
-        date_range: string;
-      };
+      const { ad_group_id, campaign_id, date_range } = input as { ad_group_id?: string; campaign_id?: string; date_range: string };
       let where = `segments.date DURING ${date_range}`;
       if (ad_group_id) where += ` AND ad_group.id = '${String(ad_group_id)}'`;
       else if (campaign_id) where += ` AND campaign.id = '${String(campaign_id)}'`;
-      return googleQuery(
-        customerId,
-        `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status, ad_group.name, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.conversions FROM ad_group_ad WHERE ${where} ORDER BY metrics.clicks DESC`,
-        tok
-      );
+      return googleQuery(customerId, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status, ad_group.name, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.conversions FROM ad_group_ad WHERE ${where} ORDER BY metrics.clicks DESC`, tok);
     }
 
     if (name === "google_create_responsive_search_ad") {
-      const { ad_group_id, final_url, headlines, descriptions, path1, path2 } = input as {
-        ad_group_id: string;
-        final_url: string;
-        headlines: string[];
-        descriptions: string[];
-        path1?: string;
-        path2?: string;
-      };
-      const res = (await googleMutate(
-        customerId,
-        [
-          {
-            adGroupAdOperation: {
-              create: {
-                ad_group: `customers/${customerId}/adGroups/${String(ad_group_id)}`,
-                status: "PAUSED",
-                ad: {
-                  final_urls: [final_url],
-                  type: "RESPONSIVE_SEARCH_AD",
-                  responsive_search_ad: {
-                    headlines: headlines.map((t) => ({ text: t })),
-                    descriptions: descriptions.map((t) => ({ text: t })),
-                    ...(path1 ? { path1 } : {}),
-                    ...(path2 ? { path2 } : {}),
-                  },
-                },
+      const { ad_group_id, final_url, headlines, descriptions, path1, path2 } = input as { ad_group_id: string; final_url: string; headlines: string[]; descriptions: string[]; path1?: string; path2?: string };
+      const res = (await googleMutate(customerId, [{
+        adGroupAdOperation: {
+          create: {
+            ad_group: `customers/${customerId}/adGroups/${String(ad_group_id)}`,
+            status: "PAUSED",
+            ad: {
+              final_urls: [final_url], type: "RESPONSIVE_SEARCH_AD",
+              responsive_search_ad: {
+                headlines: headlines.map((t) => ({ text: t })),
+                descriptions: descriptions.map((t) => ({ text: t })),
+                ...(path1 ? { path1 } : {}), ...(path2 ? { path2 } : {}),
               },
             },
           },
-        ],
-        tok
-      )) as Record<string, unknown>;
-      const rn = (
-        (
-          (res?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]
-            ?.adGroupAdResult as Record<string, unknown>
-        )?.resourceName
-      ) as string | undefined;
-      return rn
-        ? {
-            success: true,
-            resource_name: rn,
-            headline_count: headlines.length,
-            description_count: descriptions.length,
-            status: "PAUSED",
-          }
-        : { error: "RSA creation failed", details: res };
+        },
+      }], tok)) as Record<string, unknown>;
+      const rn = (((res?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]?.adGroupAdResult as Record<string, unknown>)?.resourceName) as string | undefined;
+      return rn ? { success: true, resource_name: rn, headline_count: headlines.length, description_count: descriptions.length, status: "PAUSED" } : { error: "RSA creation failed", details: res };
     }
 
     if (name === "google_get_search_terms_report") {
       const { campaign_id, date_range } = input as { campaign_id?: string; date_range: string };
       let where = `segments.date DURING ${date_range}`;
       if (campaign_id) where += ` AND campaign.id = '${String(campaign_id)}'`;
-      return googleQuery(
-        customerId,
-        `SELECT search_term_view.search_term, search_term_view.status, ad_group.name, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.conversions FROM search_term_view WHERE ${where} ORDER BY metrics.clicks DESC LIMIT 100`,
-        tok
-      );
+      return googleQuery(customerId, `SELECT search_term_view.search_term, search_term_view.status, ad_group.name, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.conversions FROM search_term_view WHERE ${where} ORDER BY metrics.clicks DESC LIMIT 100`, tok);
     }
 
     if (name === "google_get_geographic_report") {
       const { campaign_id, date_range } = input as { campaign_id?: string; date_range: string };
       let where = `segments.date DURING ${date_range}`;
       if (campaign_id) where += ` AND campaign.id = '${String(campaign_id)}'`;
-      return googleQuery(
-        customerId,
-        `SELECT geographic_view.country_criterion_id, geographic_view.location_type, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.conversions FROM geographic_view WHERE ${where} ORDER BY metrics.clicks DESC LIMIT 50`,
-        tok
-      );
+      return googleQuery(customerId, `SELECT geographic_view.country_criterion_id, geographic_view.location_type, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.conversions FROM geographic_view WHERE ${where} ORDER BY metrics.clicks DESC LIMIT 50`, tok);
     }
   }
 
@@ -1438,24 +1418,12 @@ export async function POST(request: NextRequest) {
     google?: { accessToken: string; customerId: string };
   };
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 });
-  }
-  if (!meta && !google) {
-    return NextResponse.json({ error: "No platforms connected" }, { status: 400 });
-  }
+  if (!process.env.ANTHROPIC_API_KEY) return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 });
+  if (!meta && !google) return NextResponse.json({ error: "No platforms connected" }, { status: 400 });
 
   const creds: Credentials = { meta, google };
-
   const availableTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
-
-  const connectedPlatforms = [
-    meta ? "Meta Ads (Facebook/Instagram)" : null,
-    google ? "Google Ads" : null,
-  ]
-    .filter(Boolean)
-    .join(" and ");
-
+  const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
   const systemWithContext =
     `${SYSTEM_PROMPT}\n\nCONNECTED PLATFORMS: ${connectedPlatforms}.\n` +
     `${meta ? `Meta Ad Account ID: act_${meta.adAccountId}` : "Meta Ads: NOT CONNECTED"}\n` +
@@ -1465,99 +1433,50 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => {
-        try {
-          controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
-        } catch {
-          /* closed */
-        }
+        try { controller.enqueue(encoder.encode(JSON.stringify(data) + "\n")); } catch { /* closed */ }
       };
-
       try {
-        const claudeMessages: ClaudeMessage[] = messages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }));
-
+        const claudeMessages: ClaudeMessage[] = messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
         let iteration = 0;
         while (iteration++ < 15) {
           const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-              "anthropic-version": "2023-06-01",
-            },
-            body: JSON.stringify({
-              model: CLAUDE_MODEL,
-              max_tokens: 4096,
-              system: systemWithContext,
-              tools: availableTools,
-              messages: claudeMessages,
-            }),
+            headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
+            body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 4096, system: systemWithContext, tools: availableTools, messages: claudeMessages }),
           });
-
           if (!claudeRes.ok) {
             const err = await claudeRes.json().catch(() => ({ message: claudeRes.statusText }));
             send({ type: "error", text: `Claude API error ${claudeRes.status}: ${JSON.stringify(err)}` });
             break;
           }
-
-          const { content, stop_reason } = (await claudeRes.json()) as {
-            content: ClaudeContentBlock[];
-            stop_reason: string;
-          };
-
+          const { content, stop_reason } = (await claudeRes.json()) as { content: ClaudeContentBlock[]; stop_reason: string };
           for (const block of content) {
-            if (block.type === "text" && block.text.trim())
-              send({ type: "text", text: block.text });
+            if (block.type === "text" && block.text.trim()) send({ type: "text", text: block.text });
           }
-
           if (stop_reason === "end_turn") break;
-
           if (stop_reason === "tool_use") {
             claudeMessages.push({ role: "assistant", content });
             const toolResults: ClaudeContentBlock[] = [];
-
             for (const block of content) {
               if (block.type !== "tool_use") continue;
               const platform = block.name.startsWith("meta_") ? "meta" : "google";
-              send({
-                type: "tool_call",
-                tool: block.name,
-                platform,
-                input: block.input,
-                text: fmtCall(block.name, block.input),
-              });
+              send({ type: "tool_call", tool: block.name, platform, input: block.input, text: fmtCall(block.name, block.input) });
               send({ type: "ping" });
-
               let resultText: string;
               const timeout = block.name === "meta_upload_ad_image" ? 120_000 : 30_000;
               try {
                 const result = await Promise.race([
                   executeTool(block.name, block.input, creds),
-                  new Promise<never>((_, reject) =>
-                    setTimeout(() => reject(new Error(`Tool ${block.name} timed out`)), timeout)
-                  ),
+                  new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool ${block.name} timed out`)), timeout)),
                 ]);
                 resultText = JSON.stringify(result);
-                send({
-                  type: "tool_result",
-                  tool: block.name,
-                  platform,
-                  text: fmtResult(block.name, result),
-                  data: result,
-                });
+                send({ type: "tool_result", tool: block.name, platform, text: fmtResult(block.name, result), data: result });
               } catch (err) {
                 resultText = JSON.stringify({ error: String(err) });
                 send({ type: "error", text: "Tool error: " + String(err) });
               }
-              toolResults.push({
-                type: "tool_result",
-                tool_use_id: block.id,
-                content: resultText,
-              });
+              toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultText });
             }
-
             claudeMessages.push({ role: "user", content: toolResults });
             continue;
           }
@@ -1567,21 +1486,13 @@ export async function POST(request: NextRequest) {
         send({ type: "error", text: `Server error: ${String(err)}` });
       } finally {
         send({ type: "done" });
-        try {
-          controller.close();
-        } catch {
-          /* already closed */
-        }
+        try { controller.close(); } catch { /* already closed */ }
       }
     },
   });
 
   return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
+    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
   });
 }
 
@@ -1590,6 +1501,7 @@ function fmtCall(name: string, i: ToolInput): string {
   const metaCents = (c: unknown) => `$${((c as number) / 100).toFixed(2)}`;
   const googleMicros = (m: unknown) => `$${((m as number) / 1_000_000).toFixed(2)}`;
   const map: Record<string, string> = {
+    // Existing
     meta_list_campaigns: "Fetching Meta campaigns…",
     meta_get_campaign_insights: `Fetching Meta insights (${i.date_preset})…`,
     meta_create_campaign: `Creating Meta campaign "${i.name}"…`,
@@ -1606,6 +1518,23 @@ function fmtCall(name: string, i: ToolInput): string {
     meta_upload_ad_image: `Uploading image "${i.image_filename}" to Meta…`,
     meta_create_ad: `Creating Meta ${i.image_hash ? "image" : "text/link"} ad "${i.name}"…`,
     meta_list_custom_audiences: "Fetching Meta custom audiences…",
+    // Business Asset User Profile
+    meta_get_user_profile: "Fetching authenticated user profile…",
+    meta_list_businesses: "Fetching Business Manager portfolios…",
+    meta_list_business_ad_accounts: `Fetching ad accounts for business ${i.business_id}…`,
+    meta_list_business_pages: `Fetching Pages for business ${i.business_id}…`,
+    meta_list_business_pixels: `Fetching Pixels for business ${i.business_id}…`,
+    meta_get_business_user: `Fetching business users for ${i.business_id}…`,
+    // Catalog Management
+    meta_list_catalogs: `Fetching catalogs for business ${i.business_id}…`,
+    meta_create_catalog: `Creating catalog "${i.name}"…`,
+    meta_get_catalog: `Fetching catalog ${i.catalog_id} details…`,
+    meta_list_catalog_product_sets: `Fetching product sets for catalog ${i.catalog_id}…`,
+    meta_create_product_set: `Creating product set "${i.name}"…`,
+    meta_list_catalog_products: `Fetching products from catalog ${i.catalog_id}…`,
+    meta_update_catalog_product: `Updating product ${i.retailer_id} in catalog ${i.catalog_id}…`,
+    meta_get_catalog_diagnostics: `Running diagnostics on catalog ${i.catalog_id}…`,
+    // Google
     google_list_campaigns: "Fetching Google Ads campaigns…",
     google_get_campaign_metrics: `Fetching Google Ads metrics (${i.date_range})…`,
     google_create_campaign: `Creating Google Ads campaign "${i.name}"…`,
@@ -1628,21 +1557,25 @@ function fmtCall(name: string, i: ToolInput): string {
 function fmtResult(name: string, result: unknown): string {
   const r = result as Record<string, unknown>;
   if (r?.error) return `Error: ${JSON.stringify(r.error)}`;
-  const count = (r?.data as unknown[] || (r?.results as unknown[]) || (r?.interests as unknown[]))?.length;
+  const data = r?.data as unknown[] || r?.results as unknown[] || r?.interests as unknown[] ||
+    r?.businesses as unknown[] || r?.catalogs as unknown[] || r?.products as unknown[] ||
+    r?.product_sets as unknown[] || r?.pages as unknown[] || r?.pixels as unknown[] ||
+    r?.business_users as unknown[] || r?.owned_ad_accounts as unknown[];
+  const count = Array.isArray(data) ? data.length : undefined;
   if (name === "meta_search_interests") return `Found ${count ?? "?"} interest${count !== 1 ? "s" : ""}`;
-  if (
-    name.includes("list_") ||
-    (name.includes("get_") && !name.includes("metrics") && !name.includes("insights"))
-  ) {
+  if (name === "meta_list_businesses") return `Found ${r?.count ?? "?"} Business Manager(s)`;
+  if (name === "meta_list_business_ad_accounts") return `Found ${(r?.total as number) ?? "?"} ad account(s)`;
+  if (name === "meta_list_business_pages") return `Found ${r?.count ?? "?"} Page(s)`;
+  if (name === "meta_list_business_pixels") return `Found ${r?.count ?? "?"} Pixel(s)`;
+  if (name === "meta_get_business_user") return `Found ${r?.count ?? "?"} business user(s)`;
+  if (name === "meta_list_catalogs") return `Found ${r?.count ?? "?"} catalog(s)`;
+  if (name === "meta_list_catalog_product_sets") return `Found ${r?.count ?? "?"} product set(s)`;
+  if (name === "meta_list_catalog_products") return `Found ${r?.count ?? "?"} product(s)`;
+  if (name === "meta_get_catalog_diagnostics") return `Diagnostics loaded`;
+  if (name.includes("list_") || (name.includes("get_") && !name.includes("metrics") && !name.includes("insights")))
     return `Found ${count ?? "?"} item${count !== 1 ? "s" : ""}`;
-  }
-  if (name.includes("create_"))
-    return r?.id || r?.resource_name || r?.ad_id || r?.success
-      ? `Created ✓`
-      : `Failed: ${JSON.stringify(r)}`;
-  if (name.includes("update_") || name.includes("bulk_"))
-    return r?.success !== false ? `Updated ✓` : `Failed: ${JSON.stringify(r)}`;
-  if (name.includes("insights") || name.includes("metrics"))
-    return `Metrics loaded (${count ?? "?"} rows)`;
+  if (name.includes("create_")) return r?.id || r?.resource_name || r?.ad_id || r?.success ? `Created ✓` : `Failed: ${JSON.stringify(r)}`;
+  if (name.includes("update_") || name.includes("bulk_")) return r?.success !== false ? `Updated ✓` : `Failed: ${JSON.stringify(r)}`;
+  if (name.includes("insights") || name.includes("metrics")) return `Metrics loaded (${count ?? "?"} rows)`;
   return "Done";
 }
