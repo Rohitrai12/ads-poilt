@@ -891,7 +891,11 @@ function UnifiedAdsChatInner() {
         setAttachedImages((prev) => [...prev, {
           filename: file.name,
           base64: dataUrl.split(",")[1] ?? "",
-          dataUrl, mimeType: file.type,
+          dataUrl,
+          // FIX: Extract MIME from the data URL header instead of trusting
+          // file.type — browsers sometimes report wrong type (e.g. image/jpeg
+          // for a PNG dragged from certain apps), which causes Claude API 400.
+          mimeType: dataUrl.split(";")[0].split(":")[1] ?? file.type,
           sizeLabel: formatBytes(file.size),
         }]);
       };

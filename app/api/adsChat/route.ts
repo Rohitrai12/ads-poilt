@@ -19,6 +19,16 @@ function safeParseJSON(text: string): unknown {
   return JSON.parse(safe);
 }
 
+// ─── Magic-byte MIME detection (authoritative, ignores client claims) ─────────
+function detectMime(buf: Buffer): string {
+  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
+  if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif";
+  // RIFF….WEBP
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57 && buf[9] === 0x45) return "image/webp";
+  return "image/jpeg";
+}
+
 // ─── System prompt ────────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are an expert unified Ad Manager AI that manages BOTH Meta Ads (Facebook/Instagram) AND Google Ads campaigns through natural language in a single conversation.
 
@@ -969,6 +979,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return metaPost(`${META_BASE}/${String(ad_id)}`, new URLSearchParams({ status, access_token: tok }));
     }
 
+    // ── FIXED: meta_upload_ad_image ──────────────────────────────────────────
     if (name === "meta_upload_ad_image") {
       const { image_base64, image_filename } = input as { image_base64: string; image_filename: string };
 
@@ -981,26 +992,42 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         return { error: "image_base64 is empty or too short. The image data was not passed correctly." };
       }
 
-      let binary: string;
+      // FIX 1: Use Buffer (Node.js native) instead of atob — more reliable for
+      // large binary payloads and avoids SharedArrayBuffer typing issues.
+      let bytes: Buffer;
       try {
-        binary = atob(cleanBase64);
+        bytes = Buffer.from(cleanBase64, "base64");
       } catch {
         return { error: "image_base64 is not valid base64. Ensure you are passing raw base64 without any data: prefix." };
       }
 
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      // FIX 2: Detect MIME from magic bytes — ignore whatever the client claimed.
+      // This prevents the Claude API 400 "image appears to be image/png but was
+      // declared as image/jpeg" error caused by browser File.type being unreliable.
+      const mimeType = detectMime(bytes);
 
-      const ext = (image_filename ?? "ad_image.jpg").toLowerCase().split(".").pop() ?? "jpg";
-      const mimes: Record<string, string> = {
-        jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
-        gif: "image/gif", webp: "image/webp",
+      // Derive a consistent filename extension from the detected MIME type.
+      const mimeToExt: Record<string, string> = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/gif": "gif",
+        "image/webp": "webp",
       };
-      const mimeType = mimes[ext] ?? "image/jpeg";
+      const detectedExt = mimeToExt[mimeType] ?? "jpg";
+      const baseName = (image_filename ?? "ad_image").replace(/\.[^.]+$/, "");
+      const fname = `${baseName}.${detectedExt}`;
 
+      // FIX 3: Wrap Buffer in Uint8Array so it satisfies the BlobPart type
+      // constraint (Buffer.buffer is ArrayBufferLike which includes SharedArrayBuffer,
+      // but Blob only accepts ArrayBuffer — Uint8Array is always valid).
+      const uint8 = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+      // FIX 4: The Meta /adimages API requires the FormData field KEY to BE the
+      // filename — not the string literal "filename". Using "filename" as the key
+      // causes Meta to return an empty images object with no hash.
       const form = new FormData();
       form.append("access_token", tok);
-      form.append("filename", new Blob([bytes], { type: mimeType }), image_filename ?? "ad_image.jpg");
+      form.append(fname, new Blob([uint8], { type: mimeType }), fname);
 
       const res = await fetch(`${META_BASE}/${acct}/adimages`, { method: "POST", body: form });
       const result = safeParseJSON(await res.text()) as Record<string, unknown>;
@@ -1013,7 +1040,6 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         }
       }
 
-      // Return the raw error so Claude can report it
       return { success: false, raw: result };
     }
 
@@ -1420,7 +1446,6 @@ export async function POST(request: NextRequest) {
   const availableTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
   const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
 
-  // Build system context including connected page and pixel IDs
   const systemWithContext =
     `${SYSTEM_PROMPT}\n\nCONNECTED PLATFORMS: ${connectedPlatforms}.\n` +
     `${meta
@@ -1436,10 +1461,8 @@ export async function POST(request: NextRequest) {
         try { controller.enqueue(encoder.encode(JSON.stringify(data) + "\n")); } catch { /* closed */ }
       };
       try {
-        // Convert incoming messages to Claude format, preserving image content blocks
         const claudeMessages: ClaudeMessage[] = messages.map((m) => {
           if (Array.isArray(m.content)) {
-            // Already structured content (with image blocks etc.) — pass through
             return { role: m.role as "user" | "assistant", content: m.content as ClaudeContentBlock[] };
           }
           return { role: m.role as "user" | "assistant", content: m.content as string };
