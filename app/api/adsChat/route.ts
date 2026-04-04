@@ -86,10 +86,8 @@ BEHAVIORAL RULES:
     Step 2 — Call meta_create_ad with the image_hash from Step 1, plus the required page_id (from the connected page in context), headline, body, link_url, and call_to_action.
     IMPORTANT: The page_id is available in the session context as the connected Facebook Page ID. Always use it automatically — never ask the user for the page_id if it is already provided in context.
     If no page is connected, inform the user they need to select a Facebook Page in the connection panel before creating ads.
-    24. IMAGE AD CREATION IS ATOMIC: When a user message contains an attached image and asks to create an ad, you MUST complete ALL steps in a single agentic loop without stopping: (1) list campaigns if needed, (2) list adsets if needed, (3) call meta_upload_ad_image, (4) call meta_create_ad. Never end_turn between steps 1-4.
-    `;
+24. IMAGE AD CREATION IS ATOMIC: When a user message contains an attached image and asks to create an ad, you MUST complete ALL steps in a single agentic loop without stopping: (1) list campaigns if needed, (2) list adsets if needed, (3) call meta_upload_ad_image, (4) call meta_create_ad. Never end_turn between steps 1-4. After meta_upload_ad_image succeeds and returns an image_hash, you MUST immediately call meta_create_ad in the very next tool call — do not emit any text or end_turn first.`;
 
-    
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
   {
@@ -708,11 +706,6 @@ type Credentials = {
   google?: { accessToken: string; customerId: string };
 };
 
-async function metaGet(url: string): Promise<unknown> {
-  const res = await fetch(url);
-  return safeParseJSON(await res.text());
-}
-
 async function metaPost(url: string, params: URLSearchParams): Promise<unknown> {
   const res = await fetch(url, {
     method: "POST",
@@ -732,10 +725,7 @@ async function metaPostForm(url: string, fields: Record<string, string>): Promis
 async function metaPostJSON(url: string, body: unknown, tok: string): Promise<unknown> {
   const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${tok}`,
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` },
     body: JSON.stringify(body),
   });
   return safeParseJSON(await res.text());
@@ -783,7 +773,6 @@ async function googleBudgetMutate(customerId: string, operations: unknown[], acc
 // ─── Tool executor ────────────────────────────────────────────────────────────
 async function executeTool(name: string, input: ToolInput, creds: Credentials): Promise<unknown> {
 
-  // ── META TOOLS ────────────────────────────────────────────────────────────
   if (name.startsWith("meta_")) {
     if (!creds.meta)
       return { error: "Meta Ads is not connected. Ask the user to connect their Meta account first." };
@@ -791,9 +780,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     const acct = `act_${adAccountId}`;
 
     if (name === "meta_list_campaigns") {
-      const res = await fetch(
-        `${META_BASE}/${acct}/campaigns?fields=id,name,status,objective,daily_budget,lifetime_budget&access_token=${tok}`
-      );
+      const res = await fetch(`${META_BASE}/${acct}/campaigns?fields=id,name,status,objective,daily_budget,lifetime_budget&access_token=${tok}`);
       return safeParseJSON(await res.text());
     }
 
@@ -802,22 +789,18 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       const fields = "campaign_id,campaign_name,impressions,clicks,spend,ctr,cpc,actions,action_values,purchase_roas";
       let url = `${META_BASE}/${acct}/insights?fields=${fields}&level=campaign&date_preset=${date_preset}&access_token=${tok}`;
       if (campaign_ids?.length)
-        url += `&filtering=${encodeURIComponent(
-          JSON.stringify([{ field: "campaign.id", operator: "IN", value: campaign_ids }])
-        )}`;
+        url += `&filtering=${encodeURIComponent(JSON.stringify([{ field: "campaign.id", operator: "IN", value: campaign_ids }]))}`;
       return safeParseJSON(await (await fetch(url)).text());
     }
 
     if (name === "meta_create_campaign") {
       const { name: n, objective, special_ad_category, daily_budget_cents, use_cbo } = input as {
-        name: string; objective: string; special_ad_category: string;
-        daily_budget_cents?: number; use_cbo?: boolean;
+        name: string; objective: string; special_ad_category: string; daily_budget_cents?: number; use_cbo?: boolean;
       };
-      const isAdsetBudgetSharing = use_cbo === true ? "false" : "true";
       const p = new URLSearchParams({
         name: n, objective, status: "PAUSED",
         special_ad_categories: JSON.stringify([special_ad_category]),
-        is_adset_budget_sharing_enabled: isAdsetBudgetSharing,
+        is_adset_budget_sharing_enabled: use_cbo === true ? "false" : "true",
         access_token: tok,
       });
       if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
@@ -826,9 +809,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_update_campaign_budget") {
       const { campaign_id, new_daily_budget_cents } = input as { campaign_id: string; new_daily_budget_cents: number };
-      return metaPost(`${META_BASE}/${String(campaign_id)}`, new URLSearchParams({
-        daily_budget: String(Math.round(new_daily_budget_cents)), access_token: tok,
-      }));
+      return metaPost(`${META_BASE}/${String(campaign_id)}`, new URLSearchParams({ daily_budget: String(Math.round(new_daily_budget_cents)), access_token: tok }));
     }
 
     if (name === "meta_update_campaign_status") {
@@ -849,9 +830,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_list_adsets") {
       const { campaign_id } = input as { campaign_id: string };
-      const res = await fetch(
-        `${META_BASE}/${String(campaign_id)}/adsets?fields=id,name,status,daily_budget,targeting,optimization_goal&access_token=${tok}`
-      );
+      const res = await fetch(`${META_BASE}/${String(campaign_id)}/adsets?fields=id,name,status,daily_budget,targeting,optimization_goal&access_token=${tok}`);
       return safeParseJSON(await res.text());
     }
 
@@ -928,9 +907,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_search_interests") {
       const { query, limit = 10 } = input as { query: string; limit?: number };
-      const res = await fetch(
-        `${META_BASE}/search?type=adinterest&q=${encodeURIComponent(query)}&limit=${Math.min(Number(limit), 25)}&access_token=${tok}`
-      );
+      const res = await fetch(`${META_BASE}/search?type=adinterest&q=${encodeURIComponent(query)}&limit=${Math.min(Number(limit), 25)}&access_token=${tok}`);
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const items = (data?.data as Array<Record<string, unknown>> ?? []).map((i) => ({
         id: String(i.id), name: String(i.name),
@@ -957,13 +934,9 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       const fields = "ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,impressions,clicks,spend,ctr,cpc,actions,action_values,purchase_roas";
       let url: string;
       if (adset_id) {
-        url = `${META_BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${encodeURIComponent(
-          JSON.stringify([{ field: "adset.id", operator: "EQUAL", value: String(adset_id) }])
-        )}&access_token=${tok}`;
+        url = `${META_BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${encodeURIComponent(JSON.stringify([{ field: "adset.id", operator: "EQUAL", value: String(adset_id) }]))}&access_token=${tok}`;
       } else if (campaign_id) {
-        url = `${META_BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${encodeURIComponent(
-          JSON.stringify([{ field: "campaign.id", operator: "EQUAL", value: String(campaign_id) }])
-        )}&access_token=${tok}`;
+        url = `${META_BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&filtering=${encodeURIComponent(JSON.stringify([{ field: "campaign.id", operator: "EQUAL", value: String(campaign_id) }]))}&access_token=${tok}`;
       } else {
         url = `${META_BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&access_token=${tok}`;
       }
@@ -976,62 +949,29 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     }
 
     if (name === "meta_upload_ad_image") {
-      const { image_base64, image_filename } = input as {
-        image_base64: string;
-        image_filename: string;
-      };
-
-      // Strip data URL prefix if present
-      const cleanBase64 = image_base64?.includes(",")
-        ? image_base64.split(",")[1]
-        : image_base64;
-
-      if (!cleanBase64 || cleanBase64.length < 100) {
+      const { image_base64, image_filename } = input as { image_base64: string; image_filename: string };
+      const cleanBase64 = image_base64?.includes(",") ? image_base64.split(",")[1] : image_base64;
+      if (!cleanBase64 || cleanBase64.length < 100)
         return { success: false, error: "Invalid base64: too short or missing" };
-      }
-
       let bytes: Buffer;
-      try {
-        bytes = Buffer.from(cleanBase64, "base64");
-      } catch {
-        return { success: false, error: "Invalid base64 encoding" };
-      }
-
-      if (bytes.length < 500) {
+      try { bytes = Buffer.from(cleanBase64, "base64"); }
+      catch { return { success: false, error: "Invalid base64 encoding" }; }
+      if (bytes.length < 500)
         return { success: false, error: `Image too small (${bytes.length} bytes) — likely broken base64` };
-      }
-
       const mimeType = detectMime(bytes);
-      const mimeToExt: Record<string, string> = {
-        "image/jpeg": "jpg",
-        "image/png": "png",
-        "image/gif": "gif",
-        "image/webp": "webp",
-      };
+      const mimeToExt: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
       const ext = mimeToExt[mimeType] ?? "jpg";
       const baseName = (image_filename || "ad_image").replace(/\.[^.]+$/, "");
       const fname = `${baseName}.${ext}`;
-
-      const uint8 = new Uint8Array(bytes);
       const form = new FormData();
       form.append("access_token", tok);
-      form.append("filename", new Blob([uint8], { type: mimeType }), fname);
-
+      form.append("filename", new Blob([new Uint8Array(bytes)], { type: mimeType }), fname);
       try {
-        const res = await fetch(`${META_BASE}/${acct}/adimages`, {
-          method: "POST",
-          body: form,
-        });
-        const text = await res.text();
-        const result = safeParseJSON(text) as Record<string, unknown>;
-
+        const res = await fetch(`${META_BASE}/${acct}/adimages`, { method: "POST", body: form });
+        const result = safeParseJSON(await res.text()) as Record<string, unknown>;
         if (result.images) {
           const first = Object.values(result.images)[0] as Record<string, unknown>;
-          return {
-            success: true,
-            image_hash: first.hash,
-            image_url: first.url,
-          };
+          return { success: true, image_hash: first.hash, image_url: first.url };
         }
         return { success: false, error: "Meta upload failed", raw: result };
       } catch (err) {
@@ -1040,41 +980,27 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     }
 
     if (name === "meta_create_ad") {
-      const {
-        adset_id, name: adName, page_id: inputPageId, image_hash,
-        headline, body, link_url, call_to_action, description,
-      } = input as {
+      const { adset_id, name: adName, page_id: inputPageId, image_hash, headline, body, link_url, call_to_action, description } = input as {
         adset_id: string; name: string; page_id?: string; image_hash?: string;
         headline: string; body: string; link_url: string; call_to_action: string; description?: string;
       };
-
       const page_id = inputPageId || credPageId;
-      if (!page_id) {
-        return {
-          error: "page_id is required to create an ad. No Facebook Page is connected. Please select a Page in the connection panel.",
-        };
-      }
-
+      if (!page_id)
+        return { error: "page_id is required to create an ad. No Facebook Page is connected. Please select a Page in the connection panel." };
       const hasImage = !!(image_hash && image_hash.trim().length > 0);
       const linkData: Record<string, unknown> = {
-        link: link_url,
-        message: body,
-        name: headline,
+        link: link_url, message: body, name: headline,
         call_to_action: { type: call_to_action },
       };
       if (description) linkData.description = description;
       if (hasImage) linkData.image_hash = image_hash!.trim();
-
       const creativeRes = (await metaPostForm(`${META_BASE}/${acct}/adcreatives`, {
         name: `${adName} Creative`,
         object_story_spec: JSON.stringify({ page_id: String(page_id), link_data: linkData }),
         access_token: tok,
       })) as Record<string, unknown>;
-
-      if (creativeRes.error) {
+      if (creativeRes.error)
         return { error: `Failed to create creative: ${JSON.stringify(creativeRes.error)}` };
-      }
-
       const adRes = (await metaPostForm(`${META_BASE}/${acct}/ads`, {
         name: adName,
         adset_id: String(adset_id),
@@ -1082,21 +1008,12 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         status: "PAUSED",
         access_token: tok,
       })) as Record<string, unknown>;
-
       if (adRes.id) {
-        const verified = safeParseJSON(
-          await (await fetch(
-            `${META_BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`
-          )).text()
-        ) as Record<string, unknown>;
+        const verified = safeParseJSON(await (await fetch(`${META_BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`)).text()) as Record<string, unknown>;
         return {
-          success: true,
-          ad_id: adRes.id,
-          status: "PAUSED",
-          ad_type: hasImage ? "image" : "text_link",
-          page_id_used: page_id,
-          verified_adset_id: verified?.adset_id,
-          verified_campaign_id: verified?.campaign_id,
+          success: true, ad_id: adRes.id, status: "PAUSED",
+          ad_type: hasImage ? "image" : "text_link", page_id_used: page_id,
+          verified_adset_id: verified?.adset_id, verified_campaign_id: verified?.campaign_id,
         };
       }
       return adRes;
@@ -1109,15 +1026,13 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_get_user_profile") {
       const { fields = ["id", "name", "email"] } = input as { fields?: string[] };
-      const fieldsStr = (fields as string[]).join(",");
-      const res = await fetch(`${META_BASE}/me?fields=${fieldsStr}&access_token=${tok}`);
+      const res = await fetch(`${META_BASE}/me?fields=${(fields as string[]).join(",")}&access_token=${tok}`);
       return safeParseJSON(await res.text());
     }
 
     if (name === "meta_list_businesses") {
       const { fields = ["id", "name", "profile_picture_uri", "link"] } = input as { fields?: string[] };
-      const fieldsStr = (fields as string[]).join(",");
-      const res = await fetch(`${META_BASE}/me/businesses?fields=${fieldsStr}&access_token=${tok}`);
+      const res = await fetch(`${META_BASE}/me/businesses?fields=${(fields as string[]).join(",")}&access_token=${tok}`);
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const businesses = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { businesses, count: businesses.length };
@@ -1126,15 +1041,11 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     if (name === "meta_list_business_ad_accounts") {
       const { business_id, include_client_accounts = true } = input as { business_id: string; include_client_accounts?: boolean };
       const fields = "id,name,currency,account_status,business";
-      const ownedRes = safeParseJSON(
-        await (await fetch(`${META_BASE}/${String(business_id)}/owned_ad_accounts?fields=${fields}&access_token=${tok}`)).text()
-      ) as Record<string, unknown>;
+      const ownedRes = safeParseJSON(await (await fetch(`${META_BASE}/${String(business_id)}/owned_ad_accounts?fields=${fields}&access_token=${tok}`)).text()) as Record<string, unknown>;
       const owned = (ownedRes?.data as Array<Record<string, unknown>>) ?? [];
       let client: Array<Record<string, unknown>> = [];
       if (include_client_accounts) {
-        const clientRes = safeParseJSON(
-          await (await fetch(`${META_BASE}/${String(business_id)}/client_ad_accounts?fields=${fields}&access_token=${tok}`)).text()
-        ) as Record<string, unknown>;
+        const clientRes = safeParseJSON(await (await fetch(`${META_BASE}/${String(business_id)}/client_ad_accounts?fields=${fields}&access_token=${tok}`)).text()) as Record<string, unknown>;
         client = (clientRes?.data as Array<Record<string, unknown>>) ?? [];
       }
       return { owned_ad_accounts: owned, client_ad_accounts: client, total: owned.length + client.length };
@@ -1142,8 +1053,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_list_business_pages") {
       const { business_id } = input as { business_id: string };
-      const fields = "id,name,category,fan_count,verification_status,link";
-      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pages?fields=${fields}&access_token=${tok}`);
+      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pages?fields=id,name,category,fan_count,verification_status,link&access_token=${tok}`);
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const pages = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { pages, count: pages.length };
@@ -1151,8 +1061,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_list_business_pixels") {
       const { business_id } = input as { business_id: string };
-      const fields = "id,name,creation_time,last_fired_time,is_created_by_business";
-      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pixels?fields=${fields}&access_token=${tok}`);
+      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pixels?fields=id,name,creation_time,last_fired_time,is_created_by_business&access_token=${tok}`);
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const pixels = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { pixels, count: pixels.length };
@@ -1160,8 +1069,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_get_business_user") {
       const { business_id } = input as { business_id: string };
-      const fields = "id,name,email,role,title,business";
-      const res = await fetch(`${META_BASE}/${String(business_id)}/business_users?fields=${fields}&access_token=${tok}`);
+      const res = await fetch(`${META_BASE}/${String(business_id)}/business_users?fields=id,name,email,role,title,business&access_token=${tok}`);
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const users = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { business_users: users, count: users.length };
@@ -1169,17 +1077,14 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_list_catalogs") {
       const { business_id } = input as { business_id: string };
-      const fields = "id,name,business,product_count,da_display_settings,destination_catalog_settings,catalog_store";
-      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_product_catalogs?fields=${fields}&access_token=${tok}`);
+      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_product_catalogs?fields=id,name,business,product_count,da_display_settings,destination_catalog_settings,catalog_store&access_token=${tok}`);
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const catalogs = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { catalogs, count: catalogs.length };
     }
 
     if (name === "meta_create_catalog") {
-      const { business_id, name: catalogName, catalog_type, da_display_settings } = input as {
-        business_id: string; name: string; catalog_type: string; da_display_settings?: object;
-      };
+      const { business_id, name: catalogName, catalog_type, da_display_settings } = input as { business_id: string; name: string; catalog_type: string; da_display_settings?: object };
       const p = new URLSearchParams({ name: catalogName, vertical: catalog_type, access_token: tok });
       if (da_display_settings) p.set("da_display_settings", JSON.stringify(da_display_settings));
       return metaPost(`${META_BASE}/${String(business_id)}/owned_product_catalogs`, p);
@@ -1187,17 +1092,13 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_get_catalog") {
       const { catalog_id } = input as { catalog_id: string };
-      const fields = "id,name,business,product_count,da_display_settings,vertical";
-      const res = await fetch(`${META_BASE}/${String(catalog_id)}?fields=${fields}&access_token=${tok}`);
+      const res = await fetch(`${META_BASE}/${String(catalog_id)}?fields=id,name,business,product_count,da_display_settings,vertical&access_token=${tok}`);
       return safeParseJSON(await res.text());
     }
 
     if (name === "meta_list_catalog_product_sets") {
       const { catalog_id, limit = 25 } = input as { catalog_id: string; limit?: number };
-      const fields = "id,name,product_count,filter,retailer_id";
-      const res = await fetch(
-        `${META_BASE}/${String(catalog_id)}/product_sets?fields=${fields}&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`
-      );
+      const res = await fetch(`${META_BASE}/${String(catalog_id)}/product_sets?fields=id,name,product_count,filter,retailer_id&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`);
       const data = safeParseJSON(await res.text()) as Record<string, unknown>;
       const productSets = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { product_sets: productSets, count: productSets.length };
@@ -1205,16 +1106,12 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_create_product_set") {
       const { catalog_id, name: setName, filter } = input as { catalog_id: string; name: string; filter: object };
-      const p = new URLSearchParams({ name: setName, filter: JSON.stringify(filter), access_token: tok });
-      return metaPost(`${META_BASE}/${String(catalog_id)}/product_sets`, p);
+      return metaPost(`${META_BASE}/${String(catalog_id)}/product_sets`, new URLSearchParams({ name: setName, filter: JSON.stringify(filter), access_token: tok }));
     }
 
     if (name === "meta_list_catalog_products") {
-      const { catalog_id, limit = 25, filter_equal } = input as {
-        catalog_id: string; limit?: number; filter_equal?: Record<string, string>;
-      };
-      const fields = "id,name,retailer_id,availability,price,currency,image_url,url,brand,description,condition";
-      let url = `${META_BASE}/${String(catalog_id)}/products?fields=${fields}&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`;
+      const { catalog_id, limit = 25, filter_equal } = input as { catalog_id: string; limit?: number; filter_equal?: Record<string, string> };
+      let url = `${META_BASE}/${String(catalog_id)}/products?fields=id,name,retailer_id,availability,price,currency,image_url,url,brand,description,condition&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`;
       if (filter_equal && Object.keys(filter_equal).length > 0) {
         const filterArr = Object.entries(filter_equal).map(([key, value]) => ({ field: key, operator: "EQUAL", value }));
         url += `&filter=${encodeURIComponent(JSON.stringify(filterArr))}`;
@@ -1226,58 +1123,38 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_update_catalog_product") {
       const { catalog_id, retailer_id, updates } = input as { catalog_id: string; retailer_id: string; updates: Record<string, unknown> };
-      const payload = { requests: [{ method: "UPDATE", retailer_id, data: updates }] };
-      return metaPostJSON(`${META_BASE}/${String(catalog_id)}/items_batch?access_token=${tok}`, payload, tok);
+      return metaPostJSON(`${META_BASE}/${String(catalog_id)}/items_batch?access_token=${tok}`, { requests: [{ method: "UPDATE", retailer_id, data: updates }] }, tok);
     }
 
     if (name === "meta_get_catalog_diagnostics") {
       const { catalog_id } = input as { catalog_id: string };
-      const fields = "id,name,product_count,da_display_settings";
-      const catalogData = safeParseJSON(
-        await (await fetch(`${META_BASE}/${String(catalog_id)}?fields=${fields},product_issues&access_token=${tok}`)).text()
-      ) as Record<string, unknown>;
-      const errorProductsUrl = `${META_BASE}/${String(catalog_id)}/products?filter=${encodeURIComponent(
-        JSON.stringify([{ field: "availability", operator: "EQUAL", value: "out of stock" }])
-      )}&fields=id,name,retailer_id,availability&limit=10&access_token=${tok}`;
-      const errorProducts = safeParseJSON(await (await fetch(errorProductsUrl)).text()) as Record<string, unknown>;
+      const catalogData = safeParseJSON(await (await fetch(`${META_BASE}/${String(catalog_id)}?fields=id,name,product_count,da_display_settings,product_issues&access_token=${tok}`)).text()) as Record<string, unknown>;
+      const errorProducts = safeParseJSON(await (await fetch(`${META_BASE}/${String(catalog_id)}/products?filter=${encodeURIComponent(JSON.stringify([{ field: "availability", operator: "EQUAL", value: "out of stock" }]))}&fields=id,name,retailer_id,availability&limit=10&access_token=${tok}`)).text()) as Record<string, unknown>;
       return { catalog: catalogData, sample_out_of_stock_products: (errorProducts as Record<string, unknown>)?.data ?? [] };
     }
   }
 
-  // ── GOOGLE TOOLS ──────────────────────────────────────────────────────────
   if (name.startsWith("google_")) {
     if (!creds.google)
       return { error: "Google Ads is not connected. Ask the user to connect their Google account first." };
     const { accessToken: tok, customerId } = creds.google;
 
     if (name === "google_list_campaigns") {
-      return googleQuery(
-        customerId,
-        `SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign.bidding_strategy_type, campaign_budget.amount_micros FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.name`,
-        tok
-      );
+      return googleQuery(customerId, `SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign.bidding_strategy_type, campaign_budget.amount_micros FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.name`, tok);
     }
 
     if (name === "google_get_campaign_metrics") {
       const { date_range, campaign_ids } = input as { date_range: string; campaign_ids?: string[] };
       let where = `segments.date DURING ${date_range}`;
-      if (campaign_ids?.length)
-        where += ` AND campaign.id IN (${campaign_ids.map((id) => `'${id}'`).join(",")})`;
-      return googleQuery(
-        customerId,
-        `SELECT campaign.id, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.conversions_value, metrics.cost_per_conversion FROM campaign WHERE ${where} ORDER BY metrics.cost_micros DESC`,
-        tok
-      );
+      if (campaign_ids?.length) where += ` AND campaign.id IN (${campaign_ids.map((id) => `'${id}'`).join(",")})`;
+      return googleQuery(customerId, `SELECT campaign.id, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.ctr, metrics.average_cpc, metrics.conversions, metrics.conversions_value, metrics.cost_per_conversion FROM campaign WHERE ${where} ORDER BY metrics.cost_micros DESC`, tok);
     }
 
     if (name === "google_create_campaign") {
       const { name: n, advertising_channel_type, daily_budget_micros, bidding_strategy, target_cpa_micros, target_roas } = input as {
-        name: string; advertising_channel_type: string; daily_budget_micros: number;
-        bidding_strategy: string; target_cpa_micros?: number; target_roas?: number;
+        name: string; advertising_channel_type: string; daily_budget_micros: number; bidding_strategy: string; target_cpa_micros?: number; target_roas?: number;
       };
-      const budgetRes = (await googleBudgetMutate(customerId, [{
-        create: { name: `Budget for ${n}`, amount_micros: Math.round(daily_budget_micros), delivery_method: "STANDARD" },
-      }], tok)) as Record<string, unknown>;
+      const budgetRes = (await googleBudgetMutate(customerId, [{ create: { name: `Budget for ${n}`, amount_micros: Math.round(daily_budget_micros), delivery_method: "STANDARD" } }], tok)) as Record<string, unknown>;
       const budgetRn = ((budgetRes?.results as Array<Record<string, unknown>>)?.[0]?.resourceName) as string | undefined;
       if (!budgetRn) return { error: "Failed to create budget", details: budgetRes };
       const biddingConfig: Record<string, unknown> = {};
@@ -1287,16 +1164,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       else if (bidding_strategy === "TARGET_CPA") biddingConfig.targetCpa = { targetCpaMicros: Math.round(target_cpa_micros ?? 0) };
       else if (bidding_strategy === "TARGET_ROAS") biddingConfig.targetRoas = { targetRoas: target_roas ?? 1 };
       else if (bidding_strategy === "MAXIMIZE_CONVERSION_VALUE") biddingConfig.maximizeConversionValue = target_roas ? { targetRoas: target_roas } : {};
-      const campaignRes = (await googleMutate(customerId, [{
-        campaignOperation: {
-          create: {
-            name: n, advertisingChannelType: advertising_channel_type,
-            status: "PAUSED", campaignBudget: budgetRn,
-            networkSettings: { targetGoogleSearch: advertising_channel_type === "SEARCH", targetContentNetwork: advertising_channel_type === "DISPLAY" },
-            ...biddingConfig,
-          },
-        },
-      }], tok)) as Record<string, unknown>;
+      const campaignRes = (await googleMutate(customerId, [{ campaignOperation: { create: { name: n, advertisingChannelType: advertising_channel_type, status: "PAUSED", campaignBudget: budgetRn, networkSettings: { targetGoogleSearch: advertising_channel_type === "SEARCH", targetContentNetwork: advertising_channel_type === "DISPLAY" }, ...biddingConfig } } }], tok)) as Record<string, unknown>;
       const rn = (((campaignRes?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]?.campaignResult as Record<string, unknown>)?.resourceName) as string | undefined;
       return rn ? { success: true, resource_name: rn, status: "PAUSED" } : { error: "Campaign creation failed", details: campaignRes };
     }
@@ -1311,16 +1179,12 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "google_update_campaign_status") {
       const { campaign_id, status } = input as { campaign_id: string; status: string };
-      return googleMutate(customerId, [{
-        campaignOperation: { update: { resource_name: `customers/${customerId}/campaigns/${String(campaign_id)}`, status }, update_mask: "status" },
-      }], tok);
+      return googleMutate(customerId, [{ campaignOperation: { update: { resource_name: `customers/${customerId}/campaigns/${String(campaign_id)}`, status }, update_mask: "status" } }], tok);
     }
 
     if (name === "google_bulk_update_campaign_status") {
       const { campaign_ids, status } = input as { campaign_ids: string[]; status: string };
-      const ops = campaign_ids.map((id) => ({
-        campaignOperation: { update: { resource_name: `customers/${customerId}/campaigns/${String(id)}`, status }, update_mask: "status" },
-      }));
+      const ops = campaign_ids.map((id) => ({ campaignOperation: { update: { resource_name: `customers/${customerId}/campaigns/${String(id)}`, status }, update_mask: "status" } }));
       const res = (await googleMutate(customerId, ops, tok)) as Record<string, unknown>;
       return { success: true, updated: (res?.mutateOperationResponses as Array<unknown>)?.length ?? 0, total: campaign_ids.length };
     }
@@ -1332,9 +1196,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "google_create_ad_group") {
       const { campaign_id, name: n, cpc_bid_micros, ad_group_type } = input as { campaign_id: string; name: string; cpc_bid_micros: number; ad_group_type: string };
-      const res = (await googleMutate(customerId, [{
-        adGroupOperation: { create: { name: n, campaign: `customers/${customerId}/campaigns/${String(campaign_id)}`, status: "ENABLED", type: ad_group_type, cpc_bid_micros: Math.round(cpc_bid_micros) } },
-      }], tok)) as Record<string, unknown>;
+      const res = (await googleMutate(customerId, [{ adGroupOperation: { create: { name: n, campaign: `customers/${customerId}/campaigns/${String(campaign_id)}`, status: "ENABLED", type: ad_group_type, cpc_bid_micros: Math.round(cpc_bid_micros) } } }], tok)) as Record<string, unknown>;
       const rn = (((res?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]?.adGroupResult as Record<string, unknown>)?.resourceName) as string | undefined;
       return rn ? { success: true, resource_name: rn } : { error: "Ad group creation failed", details: res };
     }
@@ -1346,15 +1208,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "google_add_keywords") {
       const { ad_group_id, keywords } = input as { ad_group_id: string; keywords: Array<{ text: string; match_type: string; cpc_bid_micros?: number }> };
-      const ops = keywords.map((kw) => ({
-        adGroupCriterionOperation: {
-          create: {
-            ad_group: `customers/${customerId}/adGroups/${String(ad_group_id)}`,
-            status: "ENABLED", keyword: { text: kw.text, match_type: kw.match_type },
-            ...(kw.cpc_bid_micros ? { cpc_bid_micros: Math.round(kw.cpc_bid_micros) } : {}),
-          },
-        },
-      }));
+      const ops = keywords.map((kw) => ({ adGroupCriterionOperation: { create: { ad_group: `customers/${customerId}/adGroups/${String(ad_group_id)}`, status: "ENABLED", keyword: { text: kw.text, match_type: kw.match_type }, ...(kw.cpc_bid_micros ? { cpc_bid_micros: Math.round(kw.cpc_bid_micros) } : {}) } } }));
       const res = (await googleMutate(customerId, ops, tok)) as Record<string, unknown>;
       return { success: true, added: (res?.mutateOperationResponses as Array<unknown>)?.length ?? 0, total: keywords.length };
     }
@@ -1374,22 +1228,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "google_create_responsive_search_ad") {
       const { ad_group_id, final_url, headlines, descriptions, path1, path2 } = input as { ad_group_id: string; final_url: string; headlines: string[]; descriptions: string[]; path1?: string; path2?: string };
-      const res = (await googleMutate(customerId, [{
-        adGroupAdOperation: {
-          create: {
-            ad_group: `customers/${customerId}/adGroups/${String(ad_group_id)}`,
-            status: "PAUSED",
-            ad: {
-              final_urls: [final_url], type: "RESPONSIVE_SEARCH_AD",
-              responsive_search_ad: {
-                headlines: headlines.map((t) => ({ text: t })),
-                descriptions: descriptions.map((t) => ({ text: t })),
-                ...(path1 ? { path1 } : {}), ...(path2 ? { path2 } : {}),
-              },
-            },
-          },
-        },
-      }], tok)) as Record<string, unknown>;
+      const res = (await googleMutate(customerId, [{ adGroupAdOperation: { create: { ad_group: `customers/${customerId}/adGroups/${String(ad_group_id)}`, status: "PAUSED", ad: { final_urls: [final_url], type: "RESPONSIVE_SEARCH_AD", responsive_search_ad: { headlines: headlines.map((t) => ({ text: t })), descriptions: descriptions.map((t) => ({ text: t })), ...(path1 ? { path1 } : {}), ...(path2 ? { path2 } : {}) } } } } }], tok)) as Record<string, unknown>;
       const rn = (((res?.mutateOperationResponses as Array<Record<string, unknown>>)?.[0]?.adGroupAdResult as Record<string, unknown>)?.resourceName) as string | undefined;
       return rn ? { success: true, resource_name: rn, headline_count: headlines.length, description_count: descriptions.length, status: "PAUSED" } : { error: "RSA creation failed", details: res };
     }
@@ -1426,10 +1265,7 @@ type ClaudeContentBlock =
 // ─── Route handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   const { messages, meta, google } = (await request.json()) as {
-    messages: Array<{
-      role: string;
-      content: string | Array<{ type: string; [key: string]: unknown }>;
-    }>;
+    messages: Array<{ role: string; content: string | Array<{ type: string; [key: string]: unknown }> }>;
     meta?: { accessToken: string; adAccountId: string; pageId?: string | null; pixelId?: string | null };
     google?: { accessToken: string; customerId: string };
   };
@@ -1441,10 +1277,7 @@ export async function POST(request: NextRequest) {
 
   const creds: Credentials = { meta, google };
   const availableTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
-  const connectedPlatforms = [
-    meta ? "Meta Ads (Facebook/Instagram)" : null,
-    google ? "Google Ads" : null,
-  ].filter(Boolean).join(" and ");
+  const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
 
   const systemWithContext =
     `${SYSTEM_PROMPT}\n\nCONNECTED PLATFORMS: ${connectedPlatforms}.\n` +
@@ -1455,42 +1288,32 @@ export async function POST(request: NextRequest) {
     `${google ? `Google Ads Customer ID: ${google.customerId}` : "Google Ads: NOT CONNECTED"}`;
 
   const encoder = new TextEncoder();
-
-  // ── Helper: safely enqueue a JSON line ──────────────────────────────────────
   let controllerClosed = false;
+
+  // Extract image blocks from the last user message for re-injection in nudges
+  const lastUserMsg = messages[messages.length - 1];
+  const imageBlocks: ClaudeContentBlock[] = Array.isArray(lastUserMsg?.content)
+    ? (lastUserMsg.content as Array<{ type: string; [key: string]: unknown }>)
+        .filter((b) => b.type === "image")
+        .map((b) => b as unknown as ClaudeContentBlock)
+    : [];
 
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => {
         if (controllerClosed) return;
-        try {
-          controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
-        } catch {
-          controllerClosed = true;
-        }
+        try { controller.enqueue(encoder.encode(JSON.stringify(data) + "\n")); }
+        catch { controllerClosed = true; }
       };
 
-      // Keepalive ping every 20s to prevent proxy timeouts
-      const pingInterval = setInterval(() => {
-        send({ type: "ping" });
-      }, 20_000);
+      const pingInterval = setInterval(() => { send({ type: "ping" }); }, 20_000);
 
       try {
-        // Build initial Claude messages from client history
-        const claudeMessages: ClaudeMessage[] = messages.map((m) => {
-          if (Array.isArray(m.content)) {
-            return {
-              role: m.role as "user" | "assistant",
-              content: m.content as ClaudeContentBlock[],
-            };
-          }
-          return {
-            role: m.role as "user" | "assistant",
-            content: m.content as string,
-          };
-        });
+        const claudeMessages: ClaudeMessage[] = messages.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: Array.isArray(m.content) ? (m.content as ClaudeContentBlock[]) : (m.content as string),
+        }));
 
-        // ── Agentic loop ────────────────────────────────────────────────────
         let iteration = 0;
         const MAX_ITERATIONS = 20;
 
@@ -1527,34 +1350,49 @@ export async function POST(request: NextRequest) {
           }
 
           let responseJson: { content: ClaudeContentBlock[]; stop_reason: string };
-          try {
-            responseJson = await claudeRes.json() as { content: ClaudeContentBlock[]; stop_reason: string };
-          } catch (parseErr) {
-            send({ type: "error", text: `Failed to parse Claude response: ${String(parseErr)}` });
-            break;
-          }
+          try { responseJson = await claudeRes.json() as { content: ClaudeContentBlock[]; stop_reason: string }; }
+          catch (parseErr) { send({ type: "error", text: `Failed to parse Claude response: ${String(parseErr)}` }); break; }
 
           const { content, stop_reason } = responseJson;
 
-          // Stream all text blocks immediately
+          // Stream text blocks
           for (const block of content) {
             if (block.type === "text") {
               const textBlock = block as { type: "text"; text: string };
-              if (textBlock.text.trim()) {
-                send({ type: "text", text: textBlock.text });
-              }
+              if (textBlock.text.trim()) send({ type: "text", text: textBlock.text });
             }
           }
 
-          // Natural end
-          if (stop_reason === "end_turn") break;
+          // ── Natural end ───────────────────────────────────────────────────
+          if (stop_reason === "end_turn") {
+            const lastTextBlock = content.filter((b) => b.type === "text").pop() as { type: "text"; text: string } | undefined;
+            const lastText = lastTextBlock?.text?.trim() ?? "";
+            const looksLikeUnfinishedPlan =
+              lastText.endsWith(":") ||
+              /\b(now i'?ll|let me now|i will now|next[,.]? i'?ll|proceeding to|uploading now|creating now)\b/i.test(lastText);
 
-          // Tool use
+            if (looksLikeUnfinishedPlan && iteration < MAX_ITERATIONS) {
+              claudeMessages.push({ role: "assistant", content });
+              claudeMessages.push({
+                role: "user",
+                content: [
+                  ...imageBlocks,
+                  { type: "text", text: "Continue — execute the next tool call now. Do not describe what you are about to do, just call the tool." },
+                ] as ClaudeContentBlock[],
+              });
+              continue;
+            }
+            break;
+          }
+
+          // ── Tool use ──────────────────────────────────────────────────────
           if (stop_reason === "tool_use") {
-            // Append assistant turn (with tool_use blocks) to history
+            // Append assistant turn ONCE before executing tools
             claudeMessages.push({ role: "assistant", content });
 
+            // Collect all tool results first, THEN push them as a single user turn
             const toolResults: ClaudeContentBlock[] = [];
+            let justUploadedImage = false;
 
             for (const block of content) {
               if (block.type !== "tool_use") continue;
@@ -1570,10 +1408,9 @@ export async function POST(request: NextRequest) {
                 text: fmtCall(toolBlock.name, toolBlock.input),
               });
 
-              // Slightly longer timeout for image uploads
               const timeoutMs = toolBlock.name === "meta_upload_ad_image" ? 120_000 : 45_000;
-
               let resultText: string;
+
               try {
                 const result = await Promise.race([
                   executeTool(toolBlock.name, toolBlock.input, creds),
@@ -1583,73 +1420,44 @@ export async function POST(request: NextRequest) {
                 ]);
 
                 resultText = JSON.stringify(result);
-                send({
-                  type: "tool_result",
-                  tool: toolBlock.name,
-                  platform,
-                  text: fmtResult(toolBlock.name, result),
-                  data: result,
-                });
+                send({ type: "tool_result", tool: toolBlock.name, platform, text: fmtResult(toolBlock.name, result), data: result });
+
+                // Check if this was a successful image upload
+                if (toolBlock.name === "meta_upload_ad_image") {
+                  try {
+                    const parsed = JSON.parse(resultText) as Record<string, unknown>;
+                    if (parsed?.image_hash && parsed?.success === true) {
+                      justUploadedImage = true;
+                    }
+                  } catch { /* ignore */ }
+                }
               } catch (toolErr) {
                 const errMsg = String(toolErr);
                 resultText = JSON.stringify({ error: errMsg });
                 send({ type: "tool_result", tool: toolBlock.name, platform, text: `Error: ${errMsg}`, data: { error: errMsg } });
               }
 
-              toolResults.push({
-                type: "tool_result",
-                tool_use_id: toolBlock.id,
-                content: resultText,
-              });
-
-              // After collecting all toolResults, before pushing them and continuing:
-const justUploadedImage = toolResults.some((tr) => {
-  if (tr.type !== "tool_result") return false;
-  try {
-    const parsed = JSON.parse(tr.content as string);
-    return parsed?.image_hash && parsed?.success === true;
-  } catch { return false; }
-});
-
-claudeMessages.push({ role: "user", content: toolResults });
-
-if (justUploadedImage) {
-  claudeMessages.push({
-    role: "user",
-    content: [
-      { type: "text", text: "Image uploaded successfully. Call meta_create_ad now using that image_hash. Do not describe what you will do — call the tool immediately." }
-    ] as ClaudeContentBlock[],
-  });
-}
-
-continue;
+              // Add this tool's result to the batch
+              toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: resultText });
             }
 
-            // Append tool results and continue loop
+            // Push ALL tool results as a single user turn (fixes the "multiple tool_result blocks" error)
             claudeMessages.push({ role: "user", content: toolResults });
+
+            // If we just uploaded an image, inject a forcing nudge AFTER the tool results
+            if (justUploadedImage) {
+              claudeMessages.push({
+                role: "user",
+                content: [
+                  { type: "text", text: "Image uploaded successfully. Now call meta_create_ad immediately using the image_hash from the result above. Do not write any text first — call the tool directly." },
+                ] as ClaudeContentBlock[],
+              });
+            }
+
             continue;
           }
 
-          if (stop_reason === "end_turn") {
-  // Detect if Claude narrated a plan but didn't execute it
-  const lastTextBlock = content.filter(b => b.type === "text").pop() as { type: "text"; text: string } | undefined;
-  const lastText = lastTextBlock?.text?.trim() ?? "";
-  const looksLikeUnfinishedPlan =
-    lastText.endsWith(":") ||
-    /\b(now i'?ll|let me now|i will now|next[,.]? i'?ll|proceeding to|uploading now|creating now)\b/i.test(lastText);
-
-  if (looksLikeUnfinishedPlan && iteration < MAX_ITERATIONS) {
-    // Push assistant message and nudge Claude to continue
-    claudeMessages.push({ role: "assistant", content });
-    claudeMessages.push({
-      role: "user",
-      content: [{ type: "text", text: "Continue — execute the next tool call now. Do not describe what you are about to do, just call the tool." }],
-    });
-    continue; // re-enter the loop
-  }
-  break;
-}
-          // Any other stop reason (max_tokens, etc.) — break
+          // Any other stop reason
           break;
         }
 
