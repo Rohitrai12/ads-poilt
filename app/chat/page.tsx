@@ -117,6 +117,19 @@ function redirectToGoogle() {
     `&state=${state}&response_type=code&access_type=offline&prompt=consent`;
 }
 
+const detectMimeFromBytes = (base64: string): string => {
+  try {
+    const bin = atob(base64.slice(0, 16));
+    const b = (i: number) => bin.charCodeAt(i);
+    if (b(0)===0x89 && b(1)===0x50) return "image/png";
+    if (b(0)===0xff && b(1)===0xd8) return "image/jpeg";
+    if (b(0)===0x47 && b(1)===0x49) return "image/gif";
+    if (b(0)===0x52 && b(1)===0x49 && b(8)===0x57 && b(9)===0x45) return "image/webp";
+  } catch {}
+  return "image/jpeg";
+};
+
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => Math.random().toString(36).slice(2);
 
@@ -888,14 +901,18 @@ function UnifiedAdsChatInner() {
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
+          const rawBase64 = dataUrl.split(",")[1] ?? "";
+  const mimeType = detectMimeFromBytes(rawBase64);
+
         setAttachedImages((prev) => [...prev, {
           filename: file.name,
-          base64: dataUrl.split(",")[1] ?? "",
+              base64: rawBase64,
+
           dataUrl,
           // FIX: Extract MIME from the data URL header instead of trusting
           // file.type — browsers sometimes report wrong type (e.g. image/jpeg
           // for a PNG dragged from certain apps), which causes Claude API 400.
-          mimeType: dataUrl.split(";")[0].split(":")[1] ?? file.type,
+    mimeType,  // magic-byte detected, not from file.type
           sizeLabel: formatBytes(file.size),
         }]);
       };
