@@ -1608,6 +1608,25 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
+          if (stop_reason === "end_turn") {
+  // Detect if Claude narrated a plan but didn't execute it
+  const lastTextBlock = content.filter(b => b.type === "text").pop() as { type: "text"; text: string } | undefined;
+  const lastText = lastTextBlock?.text?.trim() ?? "";
+  const looksLikeUnfinishedPlan =
+    lastText.endsWith(":") ||
+    /\b(now i'?ll|let me now|i will now|next[,.]? i'?ll|proceeding to|uploading now|creating now)\b/i.test(lastText);
+
+  if (looksLikeUnfinishedPlan && iteration < MAX_ITERATIONS) {
+    // Push assistant message and nudge Claude to continue
+    claudeMessages.push({ role: "assistant", content });
+    claudeMessages.push({
+      role: "user",
+      content: [{ type: "text", text: "Continue — execute the next tool call now. Do not describe what you are about to do, just call the tool." }],
+    });
+    continue; // re-enter the loop
+  }
+  break;
+}
           // Any other stop reason (max_tokens, etc.) — break
           break;
         }
