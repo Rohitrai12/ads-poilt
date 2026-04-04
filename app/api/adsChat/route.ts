@@ -997,7 +997,6 @@ if (name === "meta_upload_ad_image") {
     };
   }
 
-  // Decode base64 → Buffer
   let bytes: Buffer;
   try {
     bytes = Buffer.from(cleanBase64, "base64");
@@ -1008,7 +1007,6 @@ if (name === "meta_upload_ad_image") {
     };
   }
 
-  // Detect MIME type from magic bytes
   const mimeType = detectMime(bytes);
 
   const mimeToExt: Record<string, string> = {
@@ -1022,19 +1020,13 @@ if (name === "meta_upload_ad_image") {
   const baseName = (image_filename ?? "ad_image").replace(/\.[^.]+$/, "");
   const fname = `${baseName}.${detectedExt}`;
 
-  // ✅ FIX: Convert to real ArrayBuffer (NOT Uint8Array)
-  const arrayBuffer = bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
-  );
+  // Convert Buffer into a plain Uint8Array backed by ArrayBuffer
+  const uploadBytes = new Uint8Array(bytes.length);
+  uploadBytes.set(bytes);
 
   const form = new FormData();
   form.append("access_token", tok);
-  form.append(
-    fname,
-    new Blob([arrayBuffer], { type: mimeType }),
-    fname
-  );
+  form.append(fname, new Blob([uploadBytes], { type: mimeType }), fname);
 
   const res = await fetch(`${META_BASE}/${acct}/adimages`, {
     method: "POST",
@@ -1044,10 +1036,7 @@ if (name === "meta_upload_ad_image") {
   const result = safeParseJSON(await res.text()) as Record<string, unknown>;
 
   if (result.images) {
-    const images = result.images as Record<
-      string,
-      { hash: string; url: string }
-    >;
+    const images = result.images as Record<string, { hash: string; url: string }>;
     const first = Object.values(images)[0];
     if (first) {
       return {
