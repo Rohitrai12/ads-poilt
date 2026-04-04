@@ -85,8 +85,11 @@ BEHAVIORAL RULES:
     Step 1 — Call meta_upload_ad_image. Use the base64 data from the image content block as image_base64, and use the filename provided (or default to "ad_image.jpg"). This returns an image_hash.
     Step 2 — Call meta_create_ad with the image_hash from Step 1, plus the required page_id (from the connected page in context), headline, body, link_url, and call_to_action.
     IMPORTANT: The page_id is available in the session context as the connected Facebook Page ID. Always use it automatically — never ask the user for the page_id if it is already provided in context.
-    If no page is connected, inform the user they need to select a Facebook Page in the connection panel before creating ads.`;
+    If no page is connected, inform the user they need to select a Facebook Page in the connection panel before creating ads.
+    24. IMAGE AD CREATION IS ATOMIC: When a user message contains an attached image and asks to create an ad, you MUST complete ALL steps in a single agentic loop without stopping: (1) list campaigns if needed, (2) list adsets if needed, (3) call meta_upload_ad_image, (4) call meta_create_ad. Never end_turn between steps 1-4.
+    `;
 
+    
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
   {
@@ -1505,7 +1508,7 @@ export async function POST(request: NextRequest) {
               },
               body: JSON.stringify({
                 model: CLAUDE_MODEL,
-                max_tokens: 4096,
+                max_tokens: 8096,
                 system: systemWithContext,
                 tools: availableTools,
                 messages: claudeMessages,
