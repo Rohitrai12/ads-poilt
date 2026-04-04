@@ -979,70 +979,87 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return metaPost(`${META_BASE}/${String(ad_id)}`, new URLSearchParams({ status, access_token: tok }));
     }
 
-    // ── FIXED: meta_upload_ad_image ──────────────────────────────────────────
-    if (name === "meta_upload_ad_image") {
-      const { image_base64, image_filename } = input as { image_base64: string; image_filename: string };
+if (name === "meta_upload_ad_image") {
+  const { image_base64, image_filename } = input as {
+    image_base64: string;
+    image_filename: string;
+  };
 
-      // Strip data URL prefix if present (e.g. "data:image/jpeg;base64,")
-      const cleanBase64 = image_base64.includes(",")
-        ? image_base64.split(",")[1]
-        : image_base64;
+  // Strip data URL prefix if present
+  const cleanBase64 = image_base64.includes(",")
+    ? image_base64.split(",")[1]
+    : image_base64;
 
-      if (!cleanBase64 || cleanBase64.length < 100) {
-        return { error: "image_base64 is empty or too short. The image data was not passed correctly." };
-      }
+  if (!cleanBase64 || cleanBase64.length < 100) {
+    return {
+      error:
+        "image_base64 is empty or too short. The image data was not passed correctly.",
+    };
+  }
 
-      // FIX 1: Use Buffer (Node.js native) instead of atob — more reliable for
-      // large binary payloads and avoids SharedArrayBuffer typing issues.
-      let bytes: Buffer;
-      try {
-        bytes = Buffer.from(cleanBase64, "base64");
-      } catch {
-        return { error: "image_base64 is not valid base64. Ensure you are passing raw base64 without any data: prefix." };
-      }
+  // Decode base64 → Buffer
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(cleanBase64, "base64");
+  } catch {
+    return {
+      error:
+        "image_base64 is not valid base64. Ensure you are passing raw base64 without any data: prefix.",
+    };
+  }
 
-      // FIX 2: Detect MIME from magic bytes — ignore whatever the client claimed.
-      // This prevents the Claude API 400 "image appears to be image/png but was
-      // declared as image/jpeg" error caused by browser File.type being unreliable.
-      const mimeType = detectMime(bytes);
+  // Detect MIME type from magic bytes
+  const mimeType = detectMime(bytes);
 
-      // Derive a consistent filename extension from the detected MIME type.
-      const mimeToExt: Record<string, string> = {
-        "image/jpeg": "jpg",
-        "image/png": "png",
-        "image/gif": "gif",
-        "image/webp": "webp",
+  const mimeToExt: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+  };
+
+  const detectedExt = mimeToExt[mimeType] ?? "jpg";
+  const baseName = (image_filename ?? "ad_image").replace(/\.[^.]+$/, "");
+  const fname = `${baseName}.${detectedExt}`;
+
+  // ✅ FIX: Convert to real ArrayBuffer (NOT Uint8Array)
+  const arrayBuffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength
+  );
+
+  const form = new FormData();
+  form.append("access_token", tok);
+  form.append(
+    fname,
+    new Blob([arrayBuffer], { type: mimeType }),
+    fname
+  );
+
+  const res = await fetch(`${META_BASE}/${acct}/adimages`, {
+    method: "POST",
+    body: form,
+  });
+
+  const result = safeParseJSON(await res.text()) as Record<string, unknown>;
+
+  if (result.images) {
+    const images = result.images as Record<
+      string,
+      { hash: string; url: string }
+    >;
+    const first = Object.values(images)[0];
+    if (first) {
+      return {
+        success: true,
+        image_hash: first.hash,
+        image_url: first.url,
       };
-      const detectedExt = mimeToExt[mimeType] ?? "jpg";
-      const baseName = (image_filename ?? "ad_image").replace(/\.[^.]+$/, "");
-      const fname = `${baseName}.${detectedExt}`;
-
-      // FIX 3: Wrap Buffer in Uint8Array so it satisfies the BlobPart type
-      // constraint (Buffer.buffer is ArrayBufferLike which includes SharedArrayBuffer,
-      // but Blob only accepts ArrayBuffer — Uint8Array is always valid).
-      const uint8 = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-
-      // FIX 4: The Meta /adimages API requires the FormData field KEY to BE the
-      // filename — not the string literal "filename". Using "filename" as the key
-      // causes Meta to return an empty images object with no hash.
-      const form = new FormData();
-      form.append("access_token", tok);
-      form.append(fname, new Blob([uint8], { type: mimeType }), fname);
-
-      const res = await fetch(`${META_BASE}/${acct}/adimages`, { method: "POST", body: form });
-      const result = safeParseJSON(await res.text()) as Record<string, unknown>;
-
-      if (result.images) {
-        const images = result.images as Record<string, { hash: string; url: string }>;
-        const first = Object.values(images)[0];
-        if (first) {
-          return { success: true, image_hash: first.hash, image_url: first.url };
-        }
-      }
-
-      return { success: false, raw: result };
     }
+  }
 
+  return { success: false, raw: result };
+}
     if (name === "meta_create_ad") {
       const {
         adset_id, name: adName, page_id: inputPageId, image_hash,

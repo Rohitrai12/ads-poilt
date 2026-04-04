@@ -38,7 +38,6 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  // For API calls we store the structured content blocks separately
   apiContent?: Array<{ type: string; [key: string]: unknown }>;
   steps?: Step[];
   pending?: boolean;
@@ -117,18 +116,18 @@ function redirectToGoogle() {
     `&state=${state}&response_type=code&access_type=offline&prompt=consent`;
 }
 
+// ─── Magic-byte MIME detection (fixes Claude API 400 errors) ─────────────────
 const detectMimeFromBytes = (base64: string): string => {
   try {
     const bin = atob(base64.slice(0, 16));
     const b = (i: number) => bin.charCodeAt(i);
-    if (b(0)===0x89 && b(1)===0x50) return "image/png";
-    if (b(0)===0xff && b(1)===0xd8) return "image/jpeg";
-    if (b(0)===0x47 && b(1)===0x49) return "image/gif";
-    if (b(0)===0x52 && b(1)===0x49 && b(8)===0x57 && b(9)===0x45) return "image/webp";
-  } catch {}
+    if (b(0) === 0x89 && b(1) === 0x50) return "image/png";
+    if (b(0) === 0xff && b(1) === 0xd8) return "image/jpeg";
+    if (b(0) === 0x47 && b(1) === 0x49) return "image/gif";
+    if (b(0) === 0x52 && b(1) === 0x49 && b(8) === 0x57 && b(9) === 0x45) return "image/webp";
+  } catch { /**/ }
   return "image/jpeg";
 };
-
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => Math.random().toString(36).slice(2);
@@ -442,8 +441,8 @@ function ToolSteps({ steps, pending }: { steps: Step[]; pending?: boolean }) {
 // ─── Message components ───────────────────────────────────────────────────────
 function AIAvatar() {
   return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_16px_rgba(66,133,244,0.4)]">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <div className="flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_16px_rgba(66,133,244,0.4)]">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
       </svg>
     </div>
@@ -451,7 +450,7 @@ function AIAvatar() {
 }
 
 function UserAvatar() {
-  return <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-700 text-xs font-bold text-zinc-200">U</div>;
+  return <div className="flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-full bg-zinc-700 text-xs font-bold text-zinc-200">U</div>;
 }
 
 function ImagePill({ img, onRemove }: { img: AttachedImage; onRemove?: () => void }) {
@@ -462,7 +461,7 @@ function ImagePill({ img, onRemove }: { img: AttachedImage; onRemove?: () => voi
         <img src={img.dataUrl} alt={img.filename} className="h-full w-full object-cover" />
       </div>
       <div className="min-w-0">
-        <div className="max-w-[120px] truncate text-[11px] font-medium text-zinc-300">{img.filename}</div>
+        <div className="max-w-[100px] sm:max-w-[120px] truncate text-[11px] font-medium text-zinc-300">{img.filename}</div>
         <div className="text-[10px] text-zinc-500">{img.sizeLabel}</div>
       </div>
       {onRemove && (
@@ -481,7 +480,7 @@ function AssistantMessage({ msg }: { msg: Message }) {
   const textSteps = (msg.steps ?? []).filter((s) => s.type === "text");
   const errorSteps = (msg.steps ?? []).filter((s) => s.type === "error");
   return (
-    <div className="flex w-full gap-4 px-4 py-5" style={{ animation: "fadeIn .2s ease-out" }}>
+    <div className="flex w-full gap-3 sm:gap-4 px-3 sm:px-4 py-4 sm:py-5" style={{ animation: "fadeIn .2s ease-out" }}>
       <AIAvatar />
       <div className="min-w-0 flex-1 pt-0.5">
         <ToolSteps steps={msg.steps ?? []} pending={msg.pending} />
@@ -505,15 +504,15 @@ function AssistantMessage({ msg }: { msg: Message }) {
 
 function UserMessage({ msg }: { msg: Message }) {
   return (
-    <div className="flex w-full justify-end gap-4 px-4 py-5" style={{ animation: "fadeIn .15s ease-out" }}>
-      <div className="max-w-[75%] space-y-2">
+    <div className="flex w-full justify-end gap-3 sm:gap-4 px-3 sm:px-4 py-4 sm:py-5" style={{ animation: "fadeIn .15s ease-out" }}>
+      <div className="max-w-[85%] sm:max-w-[75%] space-y-2">
         {msg.images && msg.images.length > 0 && (
           <div className="flex flex-wrap justify-end gap-2">
             {msg.images.map((img, i) => <ImagePill key={i} img={img} />)}
           </div>
         )}
         {msg.content && (
-          <div className="rounded-2xl bg-zinc-700/80 px-4 py-3 text-sm leading-7 text-zinc-100 shadow-sm">{msg.content}</div>
+          <div className="rounded-2xl bg-zinc-700/80 px-3 sm:px-4 py-2.5 sm:py-3 text-sm leading-7 text-zinc-100 shadow-sm">{msg.content}</div>
         )}
       </div>
       <UserAvatar />
@@ -572,87 +571,85 @@ function ConnectionPanel({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Meta */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-        <div className="mb-3 flex items-center justify-between">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+        <div className="mb-2.5 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#1877f2]"><MetaIcon size={14} /></div>
-            <span className="text-sm font-semibold text-zinc-200">Meta Ads</span>
+            <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#1877f2]"><MetaIcon size={12} /></div>
+            <span className="text-xs font-semibold text-zinc-200">Meta Ads</span>
             {metaCreds && (
-              <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[9px] font-semibold text-emerald-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Connected
               </span>
             )}
           </div>
           {metaCreds ? (
-            <button onClick={onDisconnectMeta} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors">Disconnect</button>
+            <button onClick={onDisconnectMeta} className="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors">Disconnect</button>
           ) : FB_APP_ID && (
-            <button onClick={redirectToFb} className="flex items-center gap-1.5 rounded-lg bg-[#1877f2] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#166fe5] transition-colors">
-              <MetaIcon size={11} /> OAuth
+            <button onClick={redirectToFb} className="flex items-center gap-1.5 rounded-lg bg-[#1877f2] px-2.5 py-1.5 text-[10px] font-semibold text-white hover:bg-[#166fe5] transition-colors">
+              <MetaIcon size={10} /> OAuth
             </button>
           )}
         </div>
         {metaCreds ? (
-          <div className="rounded-lg bg-zinc-800/50 px-3 py-2.5 text-xs space-y-1">
-            <div className="font-medium text-zinc-300">{metaCreds.account.name}</div>
-            <div className="text-zinc-500">act_{metaCreds.adAccountId} · {metaCreds.account.currency}</div>
+          <div className="rounded-lg bg-zinc-800/50 px-2.5 py-2 text-xs space-y-1">
+            <div className="font-medium text-zinc-300 truncate">{metaCreds.account.name}</div>
+            <div className="text-zinc-500 text-[10px] truncate">act_{metaCreds.adAccountId} · {metaCreds.account.currency}</div>
             {metaCreds.page && (
-              <div className="flex items-center gap-1 text-zinc-500">
-                <span className="text-zinc-700">Page:</span>
-                <span>{metaCreds.page.name}</span>
-                <span className="text-zinc-700">({metaCreds.page.id})</span>
+              <div className="flex items-center gap-1 text-[10px] text-zinc-500 truncate">
+                <span className="text-zinc-700 shrink-0">Page:</span>
+                <span className="truncate">{metaCreds.page.name}</span>
               </div>
             )}
             {!metaCreds.page && (
-              <div className="text-amber-500/80 text-[10px]">⚠ No page selected — needed for creating ads</div>
+              <div className="text-amber-500/80 text-[9px]">⚠ No page selected — needed for creating ads</div>
             )}
             {metaCreds.pixel && (
-              <div className="flex items-center gap-1 text-zinc-500">
-                <span className="text-zinc-700">Pixel:</span>
-                <span>{metaCreds.pixel.name}</span>
-                <span className="text-zinc-700">({metaCreds.pixel.id})</span>
+              <div className="flex items-center gap-1 text-[10px] text-zinc-500 truncate">
+                <span className="text-zinc-700 shrink-0">Pixel:</span>
+                <span className="truncate">{metaCreds.pixel.name}</span>
               </div>
             )}
           </div>
         ) : (
           <div className="space-y-2">
             <Input type="password" placeholder="Access token (EAAxx…)" value={metaToken} onChange={(e) => setMetaToken(e.target.value)}
-              className="h-8 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#1877f2]/50 focus-visible:ring-0" />
+              className="h-7 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#1877f2]/50 focus-visible:ring-0" />
             <div className="flex gap-2">
-              <div className="relative flex-1">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 font-mono text-[10px] text-zinc-500">act_</span>
+              <div className="relative flex-1 min-w-0">
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 font-mono text-[9px] text-zinc-500">act_</span>
                 <Input placeholder="Account ID" value={metaAcctId.replace(/^act_/i, "")} onChange={(e) => setMetaAcctId(e.target.value)}
-                  className="h-8 pl-9 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#1877f2]/50 focus-visible:ring-0" />
+                  className="h-7 pl-8 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#1877f2]/50 focus-visible:ring-0" />
               </div>
               <button onClick={connectMetaManual} disabled={metaLoading || !metaToken.trim() || !metaAcctId.trim()}
-                className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1877f2] px-3 text-[11px] font-semibold text-white hover:bg-[#166fe5] disabled:opacity-40 transition-colors whitespace-nowrap">
-                {metaLoading && <svg width="11" height="11" className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>}
+                className="flex h-7 shrink-0 items-center gap-1 rounded-lg bg-[#1877f2] px-2.5 text-[10px] font-semibold text-white hover:bg-[#166fe5] disabled:opacity-40 transition-colors whitespace-nowrap">
+                {metaLoading && <svg width="10" height="10" className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>}
                 Connect
               </button>
             </div>
-            {metaError && <p className="text-[10px] text-red-400">{metaError}</p>}
+            {metaError && <p className="text-[9px] text-red-400">{metaError}</p>}
           </div>
         )}
       </div>
 
       {/* Google */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-        <div className="mb-3 flex items-center justify-between">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+        <div className="mb-2.5 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-zinc-700 bg-white"><GoogleAdsIcon size={16} /></div>
-            <span className="text-sm font-semibold text-zinc-200">Google Ads</span>
+            <div className="flex h-6 w-6 items-center justify-center rounded-lg border border-zinc-700 bg-white"><GoogleAdsIcon size={14} /></div>
+            <span className="text-xs font-semibold text-zinc-200">Google Ads</span>
             {googleCreds && (
-              <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[9px] font-semibold text-emerald-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />Connected
               </span>
             )}
           </div>
           {googleCreds ? (
-            <button onClick={onDisconnectGoogle} className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors">Disconnect</button>
+            <button onClick={onDisconnectGoogle} className="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors">Disconnect</button>
           ) : GOOGLE_CLIENT_ID && (
-            <button onClick={redirectToGoogle} className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-100 transition-colors">
-              <svg width="11" height="11" viewBox="0 0 24 24">
+            <button onClick={redirectToGoogle} className="flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-white px-2.5 py-1.5 text-[10px] font-semibold text-zinc-700 hover:bg-zinc-100 transition-colors">
+              <svg width="10" height="10" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
                 <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
                 <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
@@ -663,24 +660,24 @@ function ConnectionPanel({
           )}
         </div>
         {googleCreds ? (
-          <div className="rounded-lg bg-zinc-800/50 px-3 py-2.5 text-xs">
-            <div className="font-medium text-zinc-300">{googleCreds.account.name}</div>
-            <div className="text-zinc-500">{googleCreds.customerId} · {googleCreds.account.currency_code}{googleCreds.account.is_manager && " · MCC"}</div>
+          <div className="rounded-lg bg-zinc-800/50 px-2.5 py-2 text-xs">
+            <div className="font-medium text-zinc-300 truncate">{googleCreds.account.name}</div>
+            <div className="text-zinc-500 text-[10px] truncate">{googleCreds.customerId} · {googleCreds.account.currency_code}{googleCreds.account.is_manager && " · MCC"}</div>
           </div>
         ) : (
           <div className="space-y-2">
             <Input type="password" placeholder="Access token (ya29.…)" value={googleToken} onChange={(e) => setGoogleToken(e.target.value)}
-              className="h-8 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#4285F4]/50 focus-visible:ring-0" />
+              className="h-7 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#4285F4]/50 focus-visible:ring-0" />
             <div className="flex gap-2">
               <Input placeholder="Customer ID (no dashes)" value={googleCustId} onChange={(e) => setGoogleCustId(e.target.value.replace(/-/g, ""))}
-                className="h-8 flex-1 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#4285F4]/50 focus-visible:ring-0" />
+                className="h-7 flex-1 min-w-0 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#4285F4]/50 focus-visible:ring-0" />
               <button onClick={connectGoogleManual} disabled={googleLoading || !googleToken.trim() || !googleCustId.trim()}
-                className="flex h-8 items-center gap-1.5 rounded-lg bg-[#4285F4] px-3 text-[11px] font-semibold text-white hover:bg-[#3367d6] disabled:opacity-40 transition-colors whitespace-nowrap">
-                {googleLoading && <svg width="11" height="11" className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>}
+                className="flex h-7 shrink-0 items-center gap-1 rounded-lg bg-[#4285F4] px-2.5 text-[10px] font-semibold text-white hover:bg-[#3367d6] disabled:opacity-40 transition-colors whitespace-nowrap">
+                {googleLoading && <svg width="10" height="10" className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>}
                 Connect
               </button>
             </div>
-            {googleError && <p className="text-[10px] text-red-400">{googleError}</p>}
+            {googleError && <p className="text-[9px] text-red-400">{googleError}</p>}
           </div>
         )}
       </div>
@@ -688,11 +685,22 @@ function ConnectionPanel({
   );
 }
 
+// ─── Mobile drawer backdrop ───────────────────────────────────────────────────
+function DrawerBackdrop({ onClick }: { onClick: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-20 bg-black/60 backdrop-blur-sm sm:hidden"
+      onClick={onClick}
+      aria-hidden="true"
+    />
+  );
+}
+
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar({
   sessions, activeId, onSelect, onNew, onDelete,
   metaCreds, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
-  collapsed, onToggle,
+  collapsed, onToggle, mobileOpen, onMobileClose,
 }: {
   sessions: ChatSession[]; activeId: string | null;
   onSelect: (id: string) => void; onNew: () => void; onDelete: (id: string) => void;
@@ -701,28 +709,37 @@ function Sidebar({
   onConnectGoogle: (t: string, c: string, acct: GoogleAccount) => void;
   onDisconnectMeta: () => void; onDisconnectGoogle: () => void;
   collapsed: boolean; onToggle: () => void;
+  mobileOpen: boolean; onMobileClose: () => void;
 }) {
   const groups = groupSessions(sessions);
-  return (
-    <div className="flex flex-col border-r border-zinc-800/60 bg-zinc-950 transition-all duration-300 shrink-0 overflow-hidden"
-      style={{ width: collapsed ? "52px" : "280px", minWidth: collapsed ? "52px" : "280px" }}>
-      <div className={`flex items-center border-b border-zinc-800/60 px-3 py-3 ${collapsed ? "justify-center" : "justify-between"}`}>
-        {!collapsed && <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Ads Manager AI</span>}
+
+  // Shared sidebar content
+  const sidebarContent = (isMobile = false) => (
+    <div className={`flex flex-col h-full bg-zinc-950 ${isMobile ? "w-[280px]" : ""}`}>
+      <div className={`flex items-center border-b border-zinc-800/60 px-3 py-3 ${!isMobile && collapsed ? "justify-center" : "justify-between"}`}>
+        {(isMobile || !collapsed) && <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Ads Manager AI</span>}
         <div className="flex items-center gap-1">
-          {!collapsed && (
-            <button onClick={onNew} title="New chat" className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
+          {(isMobile || !collapsed) && (
+            <button onClick={() => { onNew(); if (isMobile) onMobileClose(); }} title="New chat"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
             </button>
           )}
-          <button onClick={onToggle} className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              {collapsed ? <path d="M9 18l6-6-6-6" /> : <path d="M15 18l-6-6 6-6" />}
-            </svg>
-          </button>
+          {isMobile ? (
+            <button onClick={onMobileClose} className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+            </button>
+          ) : (
+            <button onClick={onToggle} className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                {collapsed ? <path d="M9 18l6-6-6-6" /> : <path d="M15 18l-6-6 6-6" />}
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
-      {collapsed ? (
+      {!isMobile && collapsed ? (
         <div className="flex flex-col items-center gap-1.5 overflow-y-auto py-3">
           <button onClick={onNew} className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 transition-colors">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
@@ -750,9 +767,9 @@ function Sidebar({
                 <div className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-700">{group.label}</div>
                 {group.sessions.map((session) => (
                   <div key={session.id} className="group/item relative mx-1">
-                    <button onClick={() => onSelect(session.id)}
+                    <button onClick={() => { onSelect(session.id); if (isMobile) onMobileClose(); }}
                       className={`relative w-full rounded-lg px-3 py-2 text-left transition-colors ${session.id === activeId ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"}`}>
-                      <div className="truncate text-xs leading-5">{session.title}</div>
+                      <div className="truncate text-xs leading-5 pr-6">{session.title}</div>
                       <div className="text-[9px] text-zinc-700">{formatRelativeTime(session.updatedAt)}</div>
                       <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover/item:flex">
                         <span role="button" onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
@@ -772,6 +789,26 @@ function Sidebar({
       )}
     </div>
   );
+
+  return (
+    <>
+      {/* Desktop sidebar */}
+      <div className="hidden sm:flex flex-col border-r border-zinc-800/60 bg-zinc-950 transition-all duration-300 shrink-0 overflow-hidden"
+        style={{ width: collapsed ? "52px" : "280px", minWidth: collapsed ? "52px" : "280px" }}>
+        {sidebarContent(false)}
+      </div>
+
+      {/* Mobile drawer */}
+      {mobileOpen && (
+        <>
+          <DrawerBackdrop onClick={onMobileClose} />
+          <div className="fixed inset-y-0 left-0 z-30 flex sm:hidden" style={{ animation: "slideInLeft 0.2s ease-out" }}>
+            {sidebarContent(true)}
+          </div>
+        </>
+      )}
+    </>
+  );
 }
 
 // ─── Suggestion chips ─────────────────────────────────────────────────────────
@@ -786,9 +823,10 @@ const GOOGLE_SUGGESTIONS = ["Show Google campaigns", "Google Ads metrics last 30
 
 // ─── Animations ───────────────────────────────────────────────────────────────
 const ANIM = `
-@keyframes fadeIn  { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
-@keyframes bounce  { 0%,80%,100%{transform:scale(.6);opacity:.4} 40%{transform:scale(1);opacity:1} }
-@keyframes blink   { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes fadeIn      { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
+@keyframes bounce      { 0%,80%,100%{transform:scale(.6);opacity:.4} 40%{transform:scale(1);opacity:1} }
+@keyframes blink       { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes slideInLeft { from{transform:translateX(-100%)} to{transform:translateX(0)} }
 `;
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -799,6 +837,7 @@ function UnifiedAdsChatInner() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const [metaCreds, setMetaCreds] = useState<MetaCreds>(null);
   const [googleCreds, setGoogleCreds] = useState<GoogleCreds>(null);
@@ -865,6 +904,13 @@ function UnifiedAdsChatInner() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
+  // Close mobile sidebar on resize to sm+
+  useEffect(() => {
+    const handleResize = () => { if (window.innerWidth >= 640) setMobileSidebarOpen(false); };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   const connectMetaManual = useCallback((token: string, accountId: string, account: MetaAccount) => {
     const creds: NonNullable<MetaCreds> = { accessToken: token, adAccountId: accountId, account, page: null, pixel: null };
     setMetaCreds(creds);
@@ -901,18 +947,13 @@ function UnifiedAdsChatInner() {
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
-          const rawBase64 = dataUrl.split(",")[1] ?? "";
-  const mimeType = detectMimeFromBytes(rawBase64);
-
+        const rawBase64 = dataUrl.split(",")[1] ?? "";
+        const mimeType = detectMimeFromBytes(rawBase64);
         setAttachedImages((prev) => [...prev, {
           filename: file.name,
-              base64: rawBase64,
-
+          base64: rawBase64,
           dataUrl,
-          // FIX: Extract MIME from the data URL header instead of trusting
-          // file.type — browsers sometimes report wrong type (e.g. image/jpeg
-          // for a PNG dragged from certain apps), which causes Claude API 400.
-    mimeType,  // magic-byte detected, not from file.type
+          mimeType, // magic-byte detected, not from file.type
           sizeLabel: formatBytes(file.size),
         }]);
       };
@@ -954,39 +995,29 @@ function UnifiedAdsChatInner() {
       richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating a Meta ad.`;
     }
 
-    // ── Build structured content blocks for the API ────────────────────────
-    // Images are sent as proper base64 image blocks so Claude can see and use them.
     const apiContentBlocks: Array<{ type: string; [key: string]: unknown }> = [];
     if (hasImages) {
       for (const img of attachedImages) {
         apiContentBlocks.push({
           type: "image",
-          source: {
-            type: "base64",
-            media_type: img.mimeType,
-            data: img.base64, // raw base64, no data: prefix
-          },
+          source: { type: "base64", media_type: img.mimeType, data: img.base64 },
         });
       }
     }
     apiContentBlocks.push({ type: "text", text: richContent });
 
     const userMsg: Message = {
-      id: uid(),
-      role: "user",
-      content: richContent,
-      // Store structured API content separately for history replay
+      id: uid(), role: "user", content: richContent,
       apiContent: apiContentBlocks,
       images: hasImages ? [...attachedImages] : undefined,
     };
     const assistantMsg: Message = { id: uid(), role: "assistant", content: "", steps: [], pending: true };
 
-    // Build history for the API — use stored apiContent for user messages if available
     const historyForApi = [
       ...messages.map((m) => ({
         role: m.role,
         content: m.role === "user"
-          ? (m.apiContent ?? m.content)  // use structured blocks if available, else plain text
+          ? (m.apiContent ?? m.content)
           : m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content,
       })),
       { role: "user", content: apiContentBlocks },
@@ -1098,51 +1129,79 @@ function UnifiedAdsChatInner() {
     <>
       <style>{ANIM}</style>
       <div className="flex h-[100svh] flex-col bg-zinc-950 text-zinc-100">
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/60 bg-zinc-950 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_20px_rgba(66,133,244,0.3)]">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+
+        {/* ── Header ── */}
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/60 bg-zinc-950 px-3 sm:px-4 py-2.5 sm:py-3">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            {/* Mobile hamburger */}
+            <button
+              onClick={() => setMobileSidebarOpen(true)}
+              className="flex sm:hidden h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors shrink-0"
+              aria-label="Open menu"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <path d="M3 6h18M3 12h18M3 18h18" />
+              </svg>
+            </button>
+
+            <div className="flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_20px_rgba(66,133,244,0.3)] shrink-0">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
               </svg>
             </div>
-            <div>
-              <div className="text-sm font-bold leading-tight text-zinc-100">Ads Manager AI</div>
-              <div className="text-[10px] text-zinc-600 leading-tight">Meta + Google unified</div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold leading-tight text-zinc-100 truncate">Ads Manager AI</div>
+              <div className="hidden sm:block text-[10px] text-zinc-600 leading-tight">Meta + Google unified</div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {metaCreds && (
-              <Badge className="hidden gap-1.5 border-[#1877f2]/30 bg-[#1877f2]/10 text-[#1877f2] text-[10px] sm:flex">
-                <MetaIcon size={8} mono /> {metaCreds.account.name}
+              <Badge className="hidden sm:flex gap-1.5 border-[#1877f2]/30 bg-[#1877f2]/10 text-[#1877f2] text-[10px]">
+                <MetaIcon size={8} mono /> <span className="hidden md:inline">{metaCreds.account.name}</span><span className="md:hidden">Meta</span>
               </Badge>
             )}
             {googleCreds && (
-              <Badge className="hidden gap-1.5 border-[#4285F4]/30 bg-[#4285F4]/10 text-[#4285F4] text-[10px] sm:flex">
-                <GoogleAdsIcon size={8} /> {googleCreds.account.name}
+              <Badge className="hidden sm:flex gap-1.5 border-[#4285F4]/30 bg-[#4285F4]/10 text-[#4285F4] text-[10px]">
+                <GoogleAdsIcon size={8} /> <span className="hidden md:inline">{googleCreds.account.name}</span><span className="md:hidden">Google</span>
               </Badge>
             )}
+            {/* Mobile: compact platform indicators */}
+            {metaCreds && (
+              <span className="flex sm:hidden h-5 w-5 items-center justify-center rounded bg-[#1877f2]/20 text-[#1877f2]">
+                <MetaIcon size={8} mono />
+              </span>
+            )}
+            {googleCreds && (
+              <span className="flex sm:hidden h-5 w-5 items-center justify-center rounded bg-[#4285F4]/20">
+                <GoogleAdsIcon size={10} />
+              </span>
+            )}
             {!metaCreds && !googleCreds && (
-              <Badge variant="outline" className="border-zinc-700 text-[10px] text-zinc-600">NOT CONNECTED</Badge>
+              <Badge variant="outline" className="border-zinc-700 text-[9px] sm:text-[10px] text-zinc-600">NOT CONNECTED</Badge>
             )}
           </div>
         </div>
 
-        {/* Body */}
+        {/* ── Body ── */}
         <div className="flex min-h-0 flex-1">
-          <Sidebar sessions={sessions} activeId={activeSessionId} onSelect={loadSession} onNew={startNewChat} onDelete={deleteSession}
+          <Sidebar
+            sessions={sessions} activeId={activeSessionId} onSelect={loadSession} onNew={startNewChat} onDelete={deleteSession}
             metaCreds={metaCreds} googleCreds={googleCreds}
             onConnectMeta={connectMetaManual} onConnectGoogle={connectGoogle}
             onDisconnectMeta={disconnectMeta} onDisconnectGoogle={disconnectGoogle}
-            collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)} />
+            collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)}
+            mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)}
+          />
 
           <div className="flex min-h-0 flex-1 flex-col">
+            {/* ── Messages ── */}
             <div className="min-h-0 flex-1 overflow-auto">
               {messages.length === 0 ? (
-                <div className="flex flex-col items-center justify-center gap-6 px-4 py-16 text-center">
+                <div className="flex flex-col items-center justify-center gap-5 sm:gap-6 px-4 py-10 sm:py-16 text-center">
                   <div className="relative">
-                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_60px_rgba(66,133,244,0.3)]">
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <div className="flex h-14 w-14 sm:h-16 sm:w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] shadow-[0_0_60px_rgba(66,133,244,0.3)]">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                       </svg>
                     </div>
@@ -1154,31 +1213,34 @@ function UnifiedAdsChatInner() {
                   </div>
                   {!isConnected ? (
                     <div>
-                      <h2 className="text-lg font-bold text-zinc-200">Connect your ad platforms</h2>
-                      <p className="mt-1.5 max-w-xs text-sm text-zinc-500">Use the sidebar to connect Meta Ads and/or Google Ads, then start chatting.</p>
+                      <h2 className="text-base sm:text-lg font-bold text-zinc-200">Connect your ad platforms</h2>
+                      <p className="mt-1.5 max-w-xs text-xs sm:text-sm text-zinc-500">
+                        <span className="sm:hidden">Tap the menu icon to connect Meta or Google Ads.</span>
+                        <span className="hidden sm:inline">Use the sidebar to connect Meta Ads and/or Google Ads, then start chatting.</span>
+                      </p>
                     </div>
                   ) : (
                     <>
                       <div>
-                        <h2 className="text-lg font-bold text-zinc-200">How can I help with your ads?</h2>
-                        <div className="mt-2 flex items-center justify-center gap-2">
+                        <h2 className="text-base sm:text-lg font-bold text-zinc-200">How can I help with your ads?</h2>
+                        <div className="mt-2 flex items-center justify-center gap-2 flex-wrap">
                           {metaCreds && (
-                            <span className="flex items-center gap-1.5 rounded-full bg-[#1877f2]/10 px-3 py-1 text-[11px] font-semibold text-[#1877f2]">
+                            <span className="flex items-center gap-1.5 rounded-full bg-[#1877f2]/10 px-3 py-1 text-[10px] sm:text-[11px] font-semibold text-[#1877f2]">
                               <MetaIcon size={10} mono /> {metaCreds.account.name}
                             </span>
                           )}
                           {metaCreds && googleCreds && <span className="text-zinc-700">+</span>}
                           {googleCreds && (
-                            <span className="flex items-center gap-1.5 rounded-full bg-[#4285F4]/10 px-3 py-1 text-[11px] font-semibold text-[#4285F4]">
+                            <span className="flex items-center gap-1.5 rounded-full bg-[#4285F4]/10 px-3 py-1 text-[10px] sm:text-[11px] font-semibold text-[#4285F4]">
                               <GoogleAdsIcon size={10} /> {googleCreds.account.name}
                             </span>
                           )}
                         </div>
                       </div>
-                      <div className="flex max-w-lg flex-wrap justify-center gap-2">
+                      <div className="flex max-w-sm sm:max-w-lg flex-wrap justify-center gap-2">
                         {suggestions.map((s) => (
                           <button key={s} onClick={() => { setInput(s); textareaRef.current?.focus(); }}
-                            className="rounded-full border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-400 transition-all hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200">
+                            className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 sm:px-4 py-1.5 sm:py-2 text-[11px] sm:text-xs text-zinc-400 transition-all hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 text-left">
                             {s}
                           </button>
                         ))}
@@ -1196,8 +1258,8 @@ function UnifiedAdsChatInner() {
               )}
             </div>
 
-            {/* Input area */}
-            <div className="shrink-0 border-t border-zinc-800/60 bg-zinc-950 px-4 py-4" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
+            {/* ── Input area ── */}
+            <div className="shrink-0 border-t border-zinc-800/60 bg-zinc-950 px-2 sm:px-4 py-3 sm:py-4" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
               <div className="mx-auto w-full max-w-3xl">
                 {attachedImages.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-2">
@@ -1212,17 +1274,17 @@ function UnifiedAdsChatInner() {
                     <CountdownRing seconds={cooldownRemaining} total={COOLDOWN_SECONDS} />
                     <div className="flex flex-col">
                       <span className="text-[11px] font-semibold text-zinc-300">Next message in {cooldownRemaining}s</span>
-                      <span className="text-[10px] text-zinc-600">Cooldown prevents accidental rapid requests</span>
+                      <span className="hidden sm:block text-[10px] text-zinc-600">Cooldown prevents accidental rapid requests</span>
                     </div>
                   </div>
                 )}
 
                 <div className={`rounded-2xl border bg-zinc-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] backdrop-blur-sm transition-colors ${isCoolingDown && !loading ? "border-zinc-700/80 opacity-75" : "border-zinc-800 focus-within:border-zinc-700"}`}>
-                  <div className="flex items-end gap-2 px-3 py-3">
+                  <div className="flex items-end gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 sm:py-3">
                     {metaCreds && (
                       <button onClick={() => fileInputRef.current?.click()} disabled={loading || isCoolingDown} title="Attach image (Meta ad)"
-                        className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/40 text-zinc-500 transition-colors hover:border-zinc-700 hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        className="mb-0.5 sm:mb-1 flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/40 text-zinc-500 transition-colors hover:border-zinc-700 hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
                         </svg>
                       </button>
@@ -1232,30 +1294,30 @@ function UnifiedAdsChatInner() {
                     <div className="min-w-0 flex-1">
                       <textarea ref={textareaRef} rows={1}
                         placeholder={
-                          isCoolingDown && !loading ? `Wait ${cooldownRemaining}s before sending next message…`
-                          : !isConnected ? "Connect a platform in the sidebar first…"
+                          isCoolingDown && !loading ? `Wait ${cooldownRemaining}s…`
+                          : !isConnected ? "Connect a platform first…"
                           : loading ? "Thinking…"
-                          : metaCreds && googleCreds ? "Ask about Meta + Google Ads, compare platforms, manage campaigns…"
-                          : metaCreds ? "Ask about Meta Ads campaigns, ad sets, ads… or attach an image to create an image ad"
-                          : "Ask about Google Ads campaigns, keywords, metrics…"
+                          : metaCreds && googleCreds ? "Ask about Meta + Google Ads…"
+                          : metaCreds ? "Ask about Meta Ads or attach an image…"
+                          : "Ask about Google Ads…"
                         }
                         value={input}
                         onChange={(e) => { setInput(e.target.value); handleComposerResize(e.currentTarget); }}
                         onInput={(e) => handleComposerResize(e.currentTarget)}
                         onKeyDown={handleKey} onPaste={handlePaste}
                         disabled={loading || !isConnected}
-                        className="max-h-[180px] min-h-[52px] w-full resize-none border-0 bg-transparent px-1 py-1.5 text-sm leading-6 text-zinc-100 shadow-none outline-none placeholder:text-zinc-600 focus:ring-0 disabled:cursor-not-allowed" />
-                      <div className="mt-1 flex items-center justify-between gap-2 px-1 pb-0.5 text-[10px] text-zinc-600">
+                        className="max-h-[140px] sm:max-h-[180px] min-h-[44px] sm:min-h-[52px] w-full resize-none border-0 bg-transparent px-1 py-1 sm:py-1.5 text-sm leading-6 text-zinc-100 shadow-none outline-none placeholder:text-zinc-600 focus:ring-0 disabled:cursor-not-allowed" />
+                      <div className="hidden sm:flex mt-1 items-center justify-between gap-2 px-1 pb-0.5 text-[10px] text-zinc-600">
                         <span className="truncate">
                           {loading ? "Generating response…"
-                          : isCoolingDown ? `Next send available in ${cooldownRemaining}s`
-                          : "Enter to send · Shift+Enter for a new line"}
+                          : isCoolingDown ? `Next send in ${cooldownRemaining}s`
+                          : "Enter to send · Shift+Enter for new line"}
                         </span>
-                        {input.trim().length > 0 && <span className="shrink-0 tabular-nums text-zinc-500">{input.length} chars</span>}
+                        {input.trim().length > 0 && <span className="shrink-0 tabular-nums text-zinc-500">{input.length}</span>}
                       </div>
                     </div>
                     <button onClick={sendMessage} disabled={sendDisabled}
-                      className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] text-white shadow-sm transition-all hover:shadow-[0_0_12px_rgba(66,133,244,0.5)] disabled:opacity-30"
+                      className="mb-0.5 sm:mb-1 flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] text-white shadow-sm transition-all hover:shadow-[0_0_12px_rgba(66,133,244,0.5)] disabled:opacity-30"
                       title={isCoolingDown ? `Wait ${cooldownRemaining}s` : "Send message"}>
                       {loading ? (
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
@@ -1271,7 +1333,7 @@ function UnifiedAdsChatInner() {
                     </button>
                   </div>
                 </div>
-                <p className="mt-2 text-center text-[10px] text-zinc-700">
+                <p className="mt-1.5 sm:mt-2 text-center text-[9px] sm:text-[10px] text-zinc-700 hidden sm:block">
                   {metaCreds && googleCreds ? "Both platforms connected · " : ""}
                   Actions execute immediately · Meta budgets in cents · Google budgets in micros
                   {isCoolingDown && !loading && <span className="ml-1 text-zinc-600">· Cooldown active</span>}
