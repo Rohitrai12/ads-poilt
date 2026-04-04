@@ -985,7 +985,6 @@ if (name === "meta_upload_ad_image") {
     image_filename: string;
   };
 
-  // Strip data URL prefix if present
   const cleanBase64 = image_base64.includes(",")
     ? image_base64.split(",")[1]
     : image_base64;
@@ -1007,6 +1006,13 @@ if (name === "meta_upload_ad_image") {
     };
   }
 
+  if (!bytes.length || bytes.length < 500) {
+    return {
+      error:
+        `Decoded image is too small (${bytes.length} bytes). The base64 input is likely truncated or not the real image.`,
+    };
+  }
+
   const mimeType = detectMime(bytes);
 
   const mimeToExt: Record<string, string> = {
@@ -1020,13 +1026,13 @@ if (name === "meta_upload_ad_image") {
   const baseName = (image_filename ?? "ad_image").replace(/\.[^.]+$/, "");
   const fname = `${baseName}.${detectedExt}`;
 
-  // Convert Buffer into a plain Uint8Array backed by ArrayBuffer
-  const uploadBytes = new Uint8Array(bytes.length);
-  uploadBytes.set(bytes);
-
   const form = new FormData();
   form.append("access_token", tok);
-  form.append(fname, new Blob([uploadBytes], { type: mimeType }), fname);
+
+  const file = new Blob([new Uint8Array(bytes)], { type: mimeType });
+
+  // Meta expects the file under the field name "filename"
+  form.append("filename", file, fname);
 
   const res = await fetch(`${META_BASE}/${acct}/adimages`, {
     method: "POST",
