@@ -1601,6 +1601,28 @@ export async function POST(request: NextRequest) {
                 tool_use_id: toolBlock.id,
                 content: resultText,
               });
+
+              // After collecting all toolResults, before pushing them and continuing:
+const justUploadedImage = toolResults.some((tr) => {
+  if (tr.type !== "tool_result") return false;
+  try {
+    const parsed = JSON.parse(tr.content as string);
+    return parsed?.image_hash && parsed?.success === true;
+  } catch { return false; }
+});
+
+claudeMessages.push({ role: "user", content: toolResults });
+
+if (justUploadedImage) {
+  claudeMessages.push({
+    role: "user",
+    content: [
+      { type: "text", text: "Image uploaded successfully. Call meta_create_ad now using that image_hash. Do not describe what you will do — call the tool immediately." }
+    ] as ClaudeContentBlock[],
+  });
+}
+
+continue;
             }
 
             // Append tool results and continue loop
