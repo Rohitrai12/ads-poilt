@@ -15,7 +15,7 @@ import {
 const COOLDOWN_SECONDS = 10;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type StepType = "text" | "tool_call" | "tool_result" | "error" | "done";
+type StepType = "text" | "tool_call" | "tool_result" | "error" | "done" | "ping";
 type Platform = "meta" | "google";
 
 type Step = {
@@ -116,7 +116,7 @@ function redirectToGoogle() {
     `&state=${state}&response_type=code&access_type=offline&prompt=consent`;
 }
 
-// ─── Magic-byte MIME detection (fixes Claude API 400 errors) ─────────────────
+// ─── Magic-byte MIME detection ────────────────────────────────────────────────
 const detectMimeFromBytes = (base64: string): string => {
   try {
     const bin = atob(base64.slice(0, 16));
@@ -378,8 +378,12 @@ function ToolSteps({ steps, pending }: { steps: Step[]; pending?: boolean }) {
 
   return (
     <div className="mb-3 overflow-hidden rounded-2xl border border-zinc-800/70 bg-zinc-900/60 shadow-[0_10px_30px_rgba(0,0,0,0.18)] backdrop-blur-sm">
-      <button type="button" onClick={() => { if (!pending) setOpen((v) => !v); }} aria-expanded={open}
-        className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors ${pending ? "cursor-default" : "hover:bg-zinc-800/40"}`}>
+      <button
+        type="button"
+        onClick={() => { if (!pending) setOpen((v) => !v); }}
+        aria-expanded={open}
+        className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors ${pending ? "cursor-default" : "hover:bg-zinc-800/40"}`}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${hasError ? "border-red-500/40 bg-red-500/10 text-red-400" : isWorking ? "border-[#1877f2]/30 bg-[#1877f2]/10 text-[#60a5fa]" : "border-zinc-700 bg-zinc-800/60 text-zinc-500"}`}>
             {isWorking ? (
@@ -465,8 +469,10 @@ function ImagePill({ img, onRemove }: { img: AttachedImage; onRemove?: () => voi
         <div className="text-[10px] text-zinc-500">{img.sizeLabel}</div>
       </div>
       {onRemove && (
-        <button onClick={onRemove}
-          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-600 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500">
+        <button
+          onClick={onRemove}
+          className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-600 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500"
+        >
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
@@ -489,8 +495,11 @@ function AssistantMessage({ msg }: { msg: Message }) {
         ) : msg.pending ? (
           <div className="flex gap-1 pt-1">
             {[0, 1, 2].map((i) => (
-              <span key={i} className="h-2 w-2 rounded-full bg-zinc-600"
-                style={{ animation: `bounce 1.4s ease-in-out ${i * 0.16}s infinite` }} />
+              <span
+                key={i}
+                className="h-2 w-2 rounded-full bg-zinc-600"
+                style={{ animation: `bounce 1.4s ease-in-out ${i * 0.16}s infinite` }}
+              />
             ))}
           </div>
         ) : null}
@@ -713,7 +722,6 @@ function Sidebar({
 }) {
   const groups = groupSessions(sessions);
 
-  // Shared sidebar content
   const sidebarContent = (isMobile = false) => (
     <div className={`flex flex-col h-full bg-zinc-950 ${isMobile ? "w-[280px]" : ""}`}>
       <div className={`flex items-center border-b border-zinc-800/60 px-3 py-3 ${!isMobile && collapsed ? "justify-center" : "justify-between"}`}>
@@ -755,9 +763,11 @@ function Sidebar({
       ) : (
         <div className="flex flex-1 flex-col overflow-hidden">
           <div className="shrink-0 border-b border-zinc-800/60 px-3 py-3">
-            <ConnectionPanel metaCreds={metaCreds} googleCreds={googleCreds}
+            <ConnectionPanel
+              metaCreds={metaCreds} googleCreds={googleCreds}
               onConnectMeta={onConnectMeta} onConnectGoogle={onConnectGoogle}
-              onDisconnectMeta={onDisconnectMeta} onDisconnectGoogle={onDisconnectGoogle} />
+              onDisconnectMeta={onDisconnectMeta} onDisconnectGoogle={onDisconnectGoogle}
+            />
           </div>
           <div className="flex-1 overflow-y-auto py-2">
             {groups.length === 0 ? (
@@ -767,13 +777,18 @@ function Sidebar({
                 <div className="px-3 py-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-700">{group.label}</div>
                 {group.sessions.map((session) => (
                   <div key={session.id} className="group/item relative mx-1">
-                    <button onClick={() => { onSelect(session.id); if (isMobile) onMobileClose(); }}
-                      className={`relative w-full rounded-lg px-3 py-2 text-left transition-colors ${session.id === activeId ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"}`}>
+                    <button
+                      onClick={() => { onSelect(session.id); if (isMobile) onMobileClose(); }}
+                      className={`relative w-full rounded-lg px-3 py-2 text-left transition-colors ${session.id === activeId ? "bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"}`}
+                    >
                       <div className="truncate text-xs leading-5 pr-6">{session.title}</div>
                       <div className="text-[9px] text-zinc-700">{formatRelativeTime(session.updatedAt)}</div>
                       <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover/item:flex">
-                        <span role="button" onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
-                          className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:bg-red-500/10 hover:text-red-400 transition-colors">
+                        <span
+                          role="button"
+                          onClick={(e) => { e.stopPropagation(); onDelete(session.id); }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                        >
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6M10 11v6M14 11v6M9 6V4h6v2" />
                           </svg>
@@ -793,8 +808,10 @@ function Sidebar({
   return (
     <>
       {/* Desktop sidebar */}
-      <div className="hidden sm:flex flex-col border-r border-zinc-800/60 bg-zinc-950 transition-all duration-300 shrink-0 overflow-hidden"
-        style={{ width: collapsed ? "52px" : "280px", minWidth: collapsed ? "52px" : "280px" }}>
+      <div
+        className="hidden sm:flex flex-col border-r border-zinc-800/60 bg-zinc-950 transition-all duration-300 shrink-0 overflow-hidden"
+        style={{ width: collapsed ? "52px" : "280px", minWidth: collapsed ? "52px" : "280px" }}
+      >
         {sidebarContent(false)}
       </div>
 
@@ -829,6 +846,18 @@ const ANIM = `
 @keyframes slideInLeft { from{transform:translateX(-100%)} to{transform:translateX(0)} }
 `;
 
+// ─── Stream processor ─────────────────────────────────────────────────────────
+// Processes a raw NDJSON line and returns a Step or null
+function parseLine(line: string): Step | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed) as Step;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 function UnifiedAdsChatInner() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -857,11 +886,16 @@ function UnifiedAdsChatInner() {
       const elapsed = Math.floor((Date.now() - lastSentAtRef.current) / 1000);
       const remaining = Math.max(0, COOLDOWN_SECONDS - elapsed);
       setCooldownRemaining(remaining);
-      if (remaining === 0) { clearInterval(cooldownTimerRef.current!); cooldownTimerRef.current = null; }
+      if (remaining === 0) {
+        clearInterval(cooldownTimerRef.current!);
+        cooldownTimerRef.current = null;
+      }
     }, 250);
   }, []);
 
-  useEffect(() => { return () => { if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current); }; }, []);
+  useEffect(() => {
+    return () => { if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current); };
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -869,9 +903,16 @@ function UnifiedAdsChatInner() {
 
   const isCoolingDown = cooldownRemaining > 0;
 
-  useEffect(() => { if (typeof window !== "undefined") setSessions(loadSessions()); }, []);
-  useEffect(() => { if (typeof window !== "undefined") saveSessions(sessions); }, [sessions]);
+  // ── Persist sessions ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (typeof window !== "undefined") setSessions(loadSessions());
+  }, []);
 
+  useEffect(() => {
+    if (typeof window !== "undefined") saveSessions(sessions);
+  }, [sessions]);
+
+  // ── Load auth from localStorage + handle OAuth callback params ──────────
   useEffect(() => {
     if (typeof window === "undefined") return;
     try { const m = localStorage.getItem(LS_META_AUTH); if (m) setMetaCreds(JSON.parse(m)); } catch { /**/ }
@@ -902,15 +943,19 @@ function UnifiedAdsChatInner() {
     }
   }, []);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // ── Auto-scroll ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  // Close mobile sidebar on resize to sm+
+  // ── Close mobile sidebar on resize ──────────────────────────────────────
   useEffect(() => {
     const handleResize = () => { if (window.innerWidth >= 640) setMobileSidebarOpen(false); };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  // ── Credential handlers ──────────────────────────────────────────────────
   const connectMetaManual = useCallback((token: string, accountId: string, account: MetaAccount) => {
     const creds: NonNullable<MetaCreds> = { accessToken: token, adAccountId: accountId, account, page: null, pixel: null };
     setMetaCreds(creds);
@@ -922,7 +967,12 @@ function UnifiedAdsChatInner() {
     const creds: NonNullable<MetaCreds> = {
       accessToken: selection.accessToken,
       adAccountId: id,
-      account: { id: selection.adAccount.id, name: selection.adAccount.name, currency: selection.adAccount.currency, account_status: selection.adAccount.account_status },
+      account: {
+        id: selection.adAccount.id,
+        name: selection.adAccount.name,
+        currency: selection.adAccount.currency,
+        account_status: selection.adAccount.account_status,
+      },
       page: selection.page,
       pixel: selection.pixel,
     };
@@ -937,9 +987,17 @@ function UnifiedAdsChatInner() {
     try { localStorage.setItem(LS_GOOGLE_AUTH, JSON.stringify(creds)); } catch { /**/ }
   }, []);
 
-  const disconnectMeta = useCallback(() => { setMetaCreds(null); try { localStorage.removeItem(LS_META_AUTH); } catch { /**/ } }, []);
-  const disconnectGoogle = useCallback(() => { setGoogleCreds(null); try { localStorage.removeItem(LS_GOOGLE_AUTH); } catch { /**/ } }, []);
+  const disconnectMeta = useCallback(() => {
+    setMetaCreds(null);
+    try { localStorage.removeItem(LS_META_AUTH); } catch { /**/ }
+  }, []);
 
+  const disconnectGoogle = useCallback(() => {
+    setGoogleCreds(null);
+    try { localStorage.removeItem(LS_GOOGLE_AUTH); } catch { /**/ }
+  }, []);
+
+  // ── Image handling ───────────────────────────────────────────────────────
   const handleImageFiles = useCallback((files: FileList | File[]) => {
     for (const file of Array.from(files)) {
       if (!file.type.startsWith("image/")) continue;
@@ -953,7 +1011,7 @@ function UnifiedAdsChatInner() {
           filename: file.name,
           base64: rawBase64,
           dataUrl,
-          mimeType, // magic-byte detected, not from file.type
+          mimeType,
           sizeLabel: formatBytes(file.size),
         }]);
       };
@@ -961,7 +1019,11 @@ function UnifiedAdsChatInner() {
     }
   }, []);
 
-  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); handleImageFiles(e.dataTransfer.files); };
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    handleImageFiles(e.dataTransfer.files);
+  }, [handleImageFiles]);
+
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const imgs = Array.from(e.clipboardData.items).filter((i) => i.type.startsWith("image/"));
     if (!imgs.length) return;
@@ -969,22 +1031,36 @@ function UnifiedAdsChatInner() {
     handleImageFiles(imgs.map((i) => i.getAsFile()).filter(Boolean) as File[]);
   }, [handleImageFiles]);
 
+  // ── Session handlers ─────────────────────────────────────────────────────
   const startNewChat = useCallback(() => {
-    setMessages([]); setActiveSessionId(null); setAttachedImages([]);
+    setMessages([]);
+    setActiveSessionId(null);
+    setAttachedImages([]);
     setTimeout(() => textareaRef.current?.focus(), 100);
   }, []);
+
   const loadSession = useCallback((id: string) => {
-    const s = sessions.find((s) => s.id === id);
-    if (s) { setMessages(s.messages); setActiveSessionId(id); }
-  }, [sessions]);
+    setSessions((prev) => {
+      const s = prev.find((s) => s.id === id);
+      if (s) {
+        setMessages(s.messages);
+        setActiveSessionId(id);
+      }
+      return prev;
+    });
+  }, []);
+
   const deleteSession = useCallback((id: string) => {
     setSessions((prev) => prev.filter((s) => s.id !== id));
-    if (activeSessionId === id) { setMessages([]); setActiveSessionId(null); }
+    if (activeSessionId === id) {
+      setMessages([]);
+      setActiveSessionId(null);
+    }
   }, [activeSessionId]);
 
   const isConnected = !!(metaCreds || googleCreds);
 
-  // ── Send message ───────────────────────────────────────────────────────────
+  // ── Send message ──────────────────────────────────────────────────────────
   const sendMessage = useCallback(async () => {
     const hasText = input.trim().length > 0;
     const hasImages = attachedImages.length > 0;
@@ -995,6 +1071,7 @@ function UnifiedAdsChatInner() {
       richContent = `I'm attaching ${attachedImages.length} image${attachedImages.length > 1 ? "s" : ""} to use for creating a Meta ad.`;
     }
 
+    // Build API content blocks (images first, then text)
     const apiContentBlocks: Array<{ type: string; [key: string]: unknown }> = [];
     if (hasImages) {
       for (const img of attachedImages) {
@@ -1007,37 +1084,74 @@ function UnifiedAdsChatInner() {
     apiContentBlocks.push({ type: "text", text: richContent });
 
     const userMsg: Message = {
-      id: uid(), role: "user", content: richContent,
+      id: uid(),
+      role: "user",
+      content: richContent,
       apiContent: apiContentBlocks,
       images: hasImages ? [...attachedImages] : undefined,
     };
-    const assistantMsg: Message = { id: uid(), role: "assistant", content: "", steps: [], pending: true };
 
+    const assistantMsgId = uid();
+    const assistantMsg: Message = {
+      id: assistantMsgId,
+      role: "assistant",
+      content: "",
+      steps: [],
+      pending: true,
+    };
+
+    // Build conversation history for the API (current messages + new user message)
+    const currentMessages = messages;
     const historyForApi = [
-      ...messages.map((m) => ({
+      ...currentMessages.map((m) => ({
         role: m.role,
         content: m.role === "user"
           ? (m.apiContent ?? m.content)
-          : m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content,
+          : (m.steps?.filter((s) => s.type === "text").map((s) => s.text).join("\n") || m.content || ""),
       })),
-      { role: "user", content: apiContentBlocks },
+      { role: "user" as const, content: apiContentBlocks },
     ];
 
-    const newMessages = [...messages, userMsg, assistantMsg];
+    // Update UI state
+    const newMessages: Message[] = [...currentMessages, userMsg, assistantMsg];
     setMessages(newMessages);
     setInput("");
     setAttachedImages([]);
     setLoading(true);
     startCooldown();
 
+    // Create or reuse session
     const sessionId = activeSessionId ?? uid();
     if (!activeSessionId) {
       setActiveSessionId(sessionId);
       const title = richContent.slice(0, 60) + (richContent.length > 60 ? "…" : "");
-      setSessions((prev) => [{
-        id: sessionId, title, messages: newMessages, createdAt: Date.now(), updatedAt: Date.now(),
-      }, ...prev.filter((s) => s.id !== sessionId)]);
+      setSessions((prev) => [
+        {
+          id: sessionId,
+          title,
+          messages: newMessages,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        ...prev.filter((s) => s.id !== sessionId),
+      ]);
     }
+
+    // ── Helper to update assistant message and sync session atomically ──────
+    const updateAssistant = (updater: (prev: Message) => Message) => {
+      setMessages((prevMsgs) => {
+        const updated = prevMsgs.map((m) =>
+          m.id === assistantMsgId ? updater(m) : m
+        );
+        // Sync session separately (no nested state calls)
+        setSessions((prevSessions) =>
+          prevSessions.map((s) =>
+            s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s
+          )
+        );
+        return updated;
+      });
+    };
 
     try {
       const body: Record<string, unknown> = { messages: historyForApi };
@@ -1050,7 +1164,10 @@ function UnifiedAdsChatInner() {
         };
       }
       if (googleCreds) {
-        body.google = { accessToken: googleCreds.accessToken, customerId: googleCreds.customerId };
+        body.google = {
+          accessToken: googleCreds.accessToken,
+          customerId: googleCreds.customerId,
+        };
       }
 
       const res = await fetch("/api/adsChat", {
@@ -1058,72 +1175,129 @@ function UnifiedAdsChatInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.body) throw new Error("No response body");
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => res.statusText);
+        updateAssistant((m) => ({
+          ...m,
+          steps: [...(m.steps ?? []), { type: "error", text: `HTTP ${res.status}: ${errText}` }],
+          pending: false,
+        }));
+        return;
+      }
+
+      if (!res.body) {
+        updateAssistant((m) => ({
+          ...m,
+          steps: [...(m.steps ?? []), { type: "error", text: "No response body received." }],
+          pending: false,
+        }));
+        return;
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
 
+      const processLine = (line: string) => {
+        const step = parseLine(line);
+        if (!step) return;
+        // Ignore keepalive pings and done marker silently
+        if (step.type === "ping" || step.type === "done") return;
+
+        updateAssistant((m) => ({
+          ...m,
+          steps: [...(m.steps ?? []), step],
+          content:
+            step.type === "text"
+              ? (m.content ? m.content + "\n" : "") + step.text
+              : m.content,
+        }));
+      };
+
+      // Read the stream
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const step: Step = JSON.parse(line);
-            if (step.type === "done") continue;
-            setMessages((prev) => {
-              const updated = prev.map((m) =>
-                m.id === assistantMsg.id
-                  ? {
-                      ...m,
-                      steps: [...(m.steps ?? []), step],
-                      content: step.type === "text" ? (m.content ? m.content + "\n" : "") + step.text : m.content,
-                    }
-                  : m,
-              );
-              setSessions((ps) => ps.map((s) => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
-              return updated;
-            });
-          } catch { /**/ }
+        let readResult: ReadableStreamReadResult<Uint8Array>;
+        try {
+          readResult = await reader.read();
+        } catch (readErr) {
+          updateAssistant((m) => ({
+            ...m,
+            steps: [...(m.steps ?? []), { type: "error", text: `Stream read error: ${String(readErr)}` }],
+          }));
+          break;
+        }
+
+        const { done, value } = readResult;
+
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          // Keep the last (potentially incomplete) chunk in buffer
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            processLine(line);
+          }
+        }
+
+        if (done) {
+          // Flush any remaining buffer content
+          if (buffer.trim()) {
+            processLine(buffer);
+            buffer = "";
+          }
+          break;
         }
       }
+
     } catch (err) {
-      setMessages((prev) => {
-        const updated = prev.map((m) =>
-          m.id === assistantMsg.id
-            ? { ...m, steps: [...(m.steps ?? []), { type: "error" as StepType, text: "Connection error: " + String(err) }] }
-            : m,
-        );
-        setSessions((ps) => ps.map((s) => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
-        return updated;
-      });
+      updateAssistant((m) => ({
+        ...m,
+        steps: [
+          ...(m.steps ?? []),
+          { type: "error", text: `Connection error: ${String(err)}` },
+        ],
+      }));
     } finally {
-      setMessages((prev) => {
-        const f = prev.map((m) => m.id === assistantMsg.id ? { ...m, pending: false } : m);
-        setSessions((ps) => ps.map((s) => s.id === sessionId ? { ...s, messages: f, updatedAt: Date.now() } : s));
-        return f;
-      });
+      // Always mark as no longer pending
+      updateAssistant((m) => ({ ...m, pending: false }));
       setLoading(false);
       textareaRef.current?.focus();
     }
-  }, [input, attachedImages, loading, isConnected, isCoolingDown, messages, activeSessionId, metaCreds, googleCreds, startCooldown]);
+  }, [
+    input,
+    attachedImages,
+    loading,
+    isConnected,
+    isCoolingDown,
+    messages,
+    activeSessionId,
+    metaCreds,
+    googleCreds,
+    startCooldown,
+  ]);
 
-  const handleComposerResize = useCallback((el: HTMLTextAreaElement | null) => {
-    if (!el) return;
-    el.style.height = "0px";
+  // ── Textarea auto-resize ─────────────────────────────────────────────────
+  const handleComposerResize = (el: HTMLTextAreaElement) => {
+    el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
-  }, []);
-
-  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); }
   };
 
-  const suggestions = metaCreds && googleCreds ? BOTH_SUGGESTIONS : metaCreds ? META_SUGGESTIONS : GOOGLE_SUGGESTIONS;
-  const sendDisabled = (!input.trim() && attachedImages.length === 0) || loading || !isConnected || isCoolingDown;
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void sendMessage();
+    }
+  };
+
+  const suggestions = metaCreds && googleCreds
+    ? BOTH_SUGGESTIONS
+    : metaCreds
+    ? META_SUGGESTIONS
+    : GOOGLE_SUGGESTIONS;
+
+  const sendDisabled =
+    (!input.trim() && attachedImages.length === 0) || loading || !isConnected || isCoolingDown;
 
   return (
     <>
@@ -1133,7 +1307,6 @@ function UnifiedAdsChatInner() {
         {/* ── Header ── */}
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/60 bg-zinc-950 px-3 sm:px-4 py-2.5 sm:py-3">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            {/* Mobile hamburger */}
             <button
               onClick={() => setMobileSidebarOpen(true)}
               className="flex sm:hidden h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors shrink-0"
@@ -1158,15 +1331,18 @@ function UnifiedAdsChatInner() {
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {metaCreds && (
               <Badge className="hidden sm:flex gap-1.5 border-[#1877f2]/30 bg-[#1877f2]/10 text-[#1877f2] text-[10px]">
-                <MetaIcon size={8} mono /> <span className="hidden md:inline">{metaCreds.account.name}</span><span className="md:hidden">Meta</span>
+                <MetaIcon size={8} mono />
+                <span className="hidden md:inline">{metaCreds.account.name}</span>
+                <span className="md:hidden">Meta</span>
               </Badge>
             )}
             {googleCreds && (
               <Badge className="hidden sm:flex gap-1.5 border-[#4285F4]/30 bg-[#4285F4]/10 text-[#4285F4] text-[10px]">
-                <GoogleAdsIcon size={8} /> <span className="hidden md:inline">{googleCreds.account.name}</span><span className="md:hidden">Google</span>
+                <GoogleAdsIcon size={8} />
+                <span className="hidden md:inline">{googleCreds.account.name}</span>
+                <span className="md:hidden">Google</span>
               </Badge>
             )}
-            {/* Mobile: compact platform indicators */}
             {metaCreds && (
               <span className="flex sm:hidden h-5 w-5 items-center justify-center rounded bg-[#1877f2]/20 text-[#1877f2]">
                 <MetaIcon size={8} mono />
@@ -1186,12 +1362,21 @@ function UnifiedAdsChatInner() {
         {/* ── Body ── */}
         <div className="flex min-h-0 flex-1">
           <Sidebar
-            sessions={sessions} activeId={activeSessionId} onSelect={loadSession} onNew={startNewChat} onDelete={deleteSession}
-            metaCreds={metaCreds} googleCreds={googleCreds}
-            onConnectMeta={connectMetaManual} onConnectGoogle={connectGoogle}
-            onDisconnectMeta={disconnectMeta} onDisconnectGoogle={disconnectGoogle}
-            collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((v) => !v)}
-            mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)}
+            sessions={sessions}
+            activeId={activeSessionId}
+            onSelect={loadSession}
+            onNew={startNewChat}
+            onDelete={deleteSession}
+            metaCreds={metaCreds}
+            googleCreds={googleCreds}
+            onConnectMeta={connectMetaManual}
+            onConnectGoogle={connectGoogle}
+            onDisconnectMeta={disconnectMeta}
+            onDisconnectGoogle={disconnectGoogle}
+            collapsed={sidebarCollapsed}
+            onToggle={() => setSidebarCollapsed((v) => !v)}
+            mobileOpen={mobileSidebarOpen}
+            onMobileClose={() => setMobileSidebarOpen(false)}
           />
 
           <div className="flex min-h-0 flex-1 flex-col">
@@ -1239,8 +1424,11 @@ function UnifiedAdsChatInner() {
                       </div>
                       <div className="flex max-w-sm sm:max-w-lg flex-wrap justify-center gap-2">
                         {suggestions.map((s) => (
-                          <button key={s} onClick={() => { setInput(s); textareaRef.current?.focus(); }}
-                            className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 sm:px-4 py-1.5 sm:py-2 text-[11px] sm:text-xs text-zinc-400 transition-all hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 text-left">
+                          <button
+                            key={s}
+                            onClick={() => { setInput(s); textareaRef.current?.focus(); }}
+                            className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 sm:px-4 py-1.5 sm:py-2 text-[11px] sm:text-xs text-zinc-400 transition-all hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 text-left"
+                          >
                             {s}
                           </button>
                         ))}
@@ -1251,7 +1439,9 @@ function UnifiedAdsChatInner() {
               ) : (
                 <div className="mx-auto w-full max-w-3xl divide-y divide-zinc-800/40">
                   {messages.map((msg) =>
-                    msg.role === "user" ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />
+                    msg.role === "user"
+                      ? <UserMessage key={msg.id} msg={msg} />
+                      : <AssistantMessage key={msg.id} msg={msg} />
                   )}
                   <div ref={bottomRef} />
                 </div>
@@ -1259,16 +1449,26 @@ function UnifiedAdsChatInner() {
             </div>
 
             {/* ── Input area ── */}
-            <div className="shrink-0 border-t border-zinc-800/60 bg-zinc-950 px-2 sm:px-4 py-3 sm:py-4" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
+            <div
+              className="shrink-0 border-t border-zinc-800/60 bg-zinc-950 px-2 sm:px-4 py-3 sm:py-4"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleDrop}
+            >
               <div className="mx-auto w-full max-w-3xl">
+                {/* Attached image previews */}
                 {attachedImages.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-2">
                     {attachedImages.map((img, i) => (
-                      <ImagePill key={i} img={img} onRemove={() => setAttachedImages((prev) => prev.filter((_, idx) => idx !== i))} />
+                      <ImagePill
+                        key={i}
+                        img={img}
+                        onRemove={() => setAttachedImages((prev) => prev.filter((_, idx) => idx !== i))}
+                      />
                     ))}
                   </div>
                 )}
 
+                {/* Cooldown banner */}
                 {isCoolingDown && !loading && (
                   <div className="mb-2 flex items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-2" style={{ animation: "fadeIn 0.2s ease-out" }}>
                     <CountdownRing seconds={cooldownRemaining} total={COOLDOWN_SECONDS} />
@@ -1279,20 +1479,39 @@ function UnifiedAdsChatInner() {
                   </div>
                 )}
 
+                {/* Composer */}
                 <div className={`rounded-2xl border bg-zinc-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] backdrop-blur-sm transition-colors ${isCoolingDown && !loading ? "border-zinc-700/80 opacity-75" : "border-zinc-800 focus-within:border-zinc-700"}`}>
                   <div className="flex items-end gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 sm:py-3">
+                    {/* Image attach button (Meta only) */}
                     {metaCreds && (
-                      <button onClick={() => fileInputRef.current?.click()} disabled={loading || isCoolingDown} title="Attach image (Meta ad)"
-                        className="mb-0.5 sm:mb-1 flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/40 text-zinc-500 transition-colors hover:border-zinc-700 hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30">
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={loading || isCoolingDown}
+                        title="Attach image (Meta ad)"
+                        className="mb-0.5 sm:mb-1 flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/40 text-zinc-500 transition-colors hover:border-zinc-700 hover:bg-zinc-800 hover:text-[#1877f2] disabled:opacity-30"
+                      >
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" />
                         </svg>
                       </button>
                     )}
-                    <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-                      onChange={(e) => { if (e.target.files?.length) handleImageFiles(e.target.files); e.target.value = ""; }} />
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files?.length) handleImageFiles(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+
+                    {/* Text input */}
                     <div className="min-w-0 flex-1">
-                      <textarea ref={textareaRef} rows={1}
+                      <textarea
+                        ref={textareaRef}
+                        rows={1}
                         placeholder={
                           isCoolingDown && !loading ? `Wait ${cooldownRemaining}s…`
                           : !isConnected ? "Connect a platform first…"
@@ -1302,25 +1521,38 @@ function UnifiedAdsChatInner() {
                           : "Ask about Google Ads…"
                         }
                         value={input}
-                        onChange={(e) => { setInput(e.target.value); handleComposerResize(e.currentTarget); }}
-                        onInput={(e) => handleComposerResize(e.currentTarget)}
-                        onKeyDown={handleKey} onPaste={handlePaste}
+                        onChange={(e) => {
+                          setInput(e.target.value);
+                          handleComposerResize(e.currentTarget);
+                        }}
+                        onKeyDown={handleKey}
+                        onPaste={handlePaste}
                         disabled={loading || !isConnected}
-                        className="max-h-[140px] sm:max-h-[180px] min-h-[44px] sm:min-h-[52px] w-full resize-none border-0 bg-transparent px-1 py-1 sm:py-1.5 text-sm leading-6 text-zinc-100 shadow-none outline-none placeholder:text-zinc-600 focus:ring-0 disabled:cursor-not-allowed" />
+                        className="max-h-[140px] sm:max-h-[180px] min-h-[44px] sm:min-h-[52px] w-full resize-none border-0 bg-transparent px-1 py-1 sm:py-1.5 text-sm leading-6 text-zinc-100 shadow-none outline-none placeholder:text-zinc-600 focus:ring-0 disabled:cursor-not-allowed"
+                      />
                       <div className="hidden sm:flex mt-1 items-center justify-between gap-2 px-1 pb-0.5 text-[10px] text-zinc-600">
                         <span className="truncate">
                           {loading ? "Generating response…"
                           : isCoolingDown ? `Next send in ${cooldownRemaining}s`
                           : "Enter to send · Shift+Enter for new line"}
                         </span>
-                        {input.trim().length > 0 && <span className="shrink-0 tabular-nums text-zinc-500">{input.length}</span>}
+                        {input.trim().length > 0 && (
+                          <span className="shrink-0 tabular-nums text-zinc-500">{input.length}</span>
+                        )}
                       </div>
                     </div>
-                    <button onClick={sendMessage} disabled={sendDisabled}
+
+                    {/* Send button */}
+                    <button
+                      onClick={sendMessage}
+                      disabled={sendDisabled}
                       className="mb-0.5 sm:mb-1 flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#1877f2] to-[#4285F4] text-white shadow-sm transition-all hover:shadow-[0_0_12px_rgba(66,133,244,0.5)] disabled:opacity-30"
-                      title={isCoolingDown ? `Wait ${cooldownRemaining}s` : "Send message"}>
+                      title={isCoolingDown ? `Wait ${cooldownRemaining}s` : "Send message"}
+                    >
                       {loading ? (
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
+                          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                        </svg>
                       ) : isCoolingDown ? (
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                           <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
@@ -1333,6 +1565,7 @@ function UnifiedAdsChatInner() {
                     </button>
                   </div>
                 </div>
+
                 <p className="mt-1.5 sm:mt-2 text-center text-[9px] sm:text-[10px] text-zinc-700 hidden sm:block">
                   {metaCreds && googleCreds ? "Both platforms connected · " : ""}
                   Actions execute immediately · Meta budgets in cents · Google budgets in micros
@@ -1351,7 +1584,8 @@ function UnifiedAdsChatInner() {
           pages={metaPending.pages}
           pixels={metaPending.pixels}
           onConfirm={handleMetaPickerConfirm}
-          onCancel={() => setMetaPending(null)} />
+          onCancel={() => setMetaPending(null)}
+        />
       )}
     </>
   );

@@ -19,12 +19,11 @@ function safeParseJSON(text: string): unknown {
   return JSON.parse(safe);
 }
 
-// ─── Magic-byte MIME detection (authoritative, ignores client claims) ─────────
+// ─── Magic-byte MIME detection ────────────────────────────────────────────────
 function detectMime(buf: Buffer): string {
   if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
   if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
   if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif";
-  // RIFF….WEBP
   if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57 && buf[9] === 0x45) return "image/webp";
   return "image/jpeg";
 }
@@ -80,7 +79,7 @@ BEHAVIORAL RULES:
     - If user requests target cost: set bid_strategy = COST_CAP and bid_amount_cents = the target.
     - NEVER set bid_strategy to a capped type without also providing bid_amount_cents.
     - NEVER set bid_amount_cents without a matching capped bid_strategy.
-21. BUSINESS ASSETS: Use meta_list_businesses to show the user's business portfolios, then meta_list_business_ad_accounts or meta_list_business_pages to enumerate assets under a specific business. This helps users understand which business owns their ad account and pages.
+21. BUSINESS ASSETS: Use meta_list_businesses to show the user's business portfolios, then meta_list_business_ad_accounts or meta_list_business_pages to enumerate assets under a specific business.
 22. PRODUCT CATALOGS: Use meta_list_catalogs to list product catalogs under a business. Use meta_create_catalog to create a new catalog. Use meta_list_catalog_products to browse products. Catalogs are required for Dynamic Ads and Advantage+ Shopping Campaigns.
 23. IMAGE UPLOADS FOR ADS: When the user attaches an image in the conversation, the image is provided as a base64-encoded image content block in the message. To create an image ad:
     Step 1 — Call meta_upload_ad_image. Use the base64 data from the image content block as image_base64, and use the filename provided (or default to "ad_image.jpg"). This returns an image_hash.
@@ -334,8 +333,7 @@ const META_TOOLS = [
   },
   {
     name: "meta_get_user_profile",
-    description:
-      "Get the authenticated user's Meta profile including name, email, and business-related fields.",
+    description: "Get the authenticated user's Meta profile including name, email, and business-related fields.",
     input_schema: {
       type: "object",
       properties: {
@@ -350,23 +348,18 @@ const META_TOOLS = [
   },
   {
     name: "meta_list_businesses",
-    description:
-      "List all Business Manager portfolios the user has access to (uses /me/businesses).",
+    description: "List all Business Manager portfolios the user has access to (uses /me/businesses).",
     input_schema: {
       type: "object",
       properties: {
-        fields: {
-          type: "array",
-          items: { type: "string" },
-        },
+        fields: { type: "array", items: { type: "string" } },
       },
       required: [],
     },
   },
   {
     name: "meta_list_business_ad_accounts",
-    description:
-      "List all ad accounts owned by or accessible to a specific Business Manager.",
+    description: "List all ad accounts owned by or accessible to a specific Business Manager.",
     input_schema: {
       type: "object",
       properties: {
@@ -979,82 +972,70 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       return metaPost(`${META_BASE}/${String(ad_id)}`, new URLSearchParams({ status, access_token: tok }));
     }
 
-if (name === "meta_upload_ad_image") {
-  const { image_base64, image_filename } = input as {
-    image_base64: string;
-    image_filename: string;
-  };
-
-  const cleanBase64 = image_base64.includes(",")
-    ? image_base64.split(",")[1]
-    : image_base64;
-
-  if (!cleanBase64 || cleanBase64.length < 100) {
-    return {
-      error:
-        "image_base64 is empty or too short. The image data was not passed correctly.",
-    };
-  }
-
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(cleanBase64, "base64");
-  } catch {
-    return {
-      error:
-        "image_base64 is not valid base64. Ensure you are passing raw base64 without any data: prefix.",
-    };
-  }
-
-  if (!bytes.length || bytes.length < 500) {
-    return {
-      error:
-        `Decoded image is too small (${bytes.length} bytes). The base64 input is likely truncated or not the real image.`,
-    };
-  }
-
-  const mimeType = detectMime(bytes);
-
-  const mimeToExt: Record<string, string> = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/gif": "gif",
-    "image/webp": "webp",
-  };
-
-  const detectedExt = mimeToExt[mimeType] ?? "jpg";
-  const baseName = (image_filename ?? "ad_image").replace(/\.[^.]+$/, "");
-  const fname = `${baseName}.${detectedExt}`;
-
-  const form = new FormData();
-  form.append("access_token", tok);
-
-  const file = new Blob([new Uint8Array(bytes)], { type: mimeType });
-
-  // Meta expects the file under the field name "filename"
-  form.append("filename", file, fname);
-
-  const res = await fetch(`${META_BASE}/${acct}/adimages`, {
-    method: "POST",
-    body: form,
-  });
-
-  const result = safeParseJSON(await res.text()) as Record<string, unknown>;
-
-  if (result.images) {
-    const images = result.images as Record<string, { hash: string; url: string }>;
-    const first = Object.values(images)[0];
-    if (first) {
-      return {
-        success: true,
-        image_hash: first.hash,
-        image_url: first.url,
+    if (name === "meta_upload_ad_image") {
+      const { image_base64, image_filename } = input as {
+        image_base64: string;
+        image_filename: string;
       };
-    }
-  }
 
-  return { success: false, raw: result };
-}
+      // Strip data URL prefix if present
+      const cleanBase64 = image_base64?.includes(",")
+        ? image_base64.split(",")[1]
+        : image_base64;
+
+      if (!cleanBase64 || cleanBase64.length < 100) {
+        return { success: false, error: "Invalid base64: too short or missing" };
+      }
+
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(cleanBase64, "base64");
+      } catch {
+        return { success: false, error: "Invalid base64 encoding" };
+      }
+
+      if (bytes.length < 500) {
+        return { success: false, error: `Image too small (${bytes.length} bytes) — likely broken base64` };
+      }
+
+      const mimeType = detectMime(bytes);
+      const mimeToExt: Record<string, string> = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/gif": "gif",
+        "image/webp": "webp",
+      };
+      const ext = mimeToExt[mimeType] ?? "jpg";
+      const baseName = (image_filename || "ad_image").replace(/\.[^.]+$/, "");
+      const fname = `${baseName}.${ext}`;
+
+      const uint8 = new Uint8Array(bytes);
+      const form = new FormData();
+      form.append("access_token", tok);
+      form.append("filename", new Blob([uint8], { type: mimeType }), fname);
+
+      try {
+        const res = await fetch(`${META_BASE}/${acct}/adimages`, {
+          method: "POST",
+          body: form,
+        });
+        const text = await res.text();
+        const result = safeParseJSON(text) as Record<string, unknown>;
+
+        if (result.images) {
+          const first = Object.values(result.images)[0] as Record<string, unknown>;
+          return {
+            success: true,
+            image_hash: first.hash,
+            image_url: first.url,
+          };
+        }
+        return { success: false, error: "Meta upload failed", raw: result };
+      } catch (err) {
+        return { success: false, error: "Network error during upload", details: String(err) };
+      }
+    }
+
     if (name === "meta_create_ad") {
       const {
         adset_id, name: adName, page_id: inputPageId, image_hash,
@@ -1064,11 +1045,10 @@ if (name === "meta_upload_ad_image") {
         headline: string; body: string; link_url: string; call_to_action: string; description?: string;
       };
 
-      // Resolve page_id: prefer tool input, fall back to creds
       const page_id = inputPageId || credPageId;
       if (!page_id) {
         return {
-          error: "page_id is required to create an ad. No Facebook Page is connected. Please select a Page in the connection panel (sidebar → Meta Ads → Page).",
+          error: "page_id is required to create an ad. No Facebook Page is connected. Please select a Page in the connection panel.",
         };
       }
 
@@ -1451,12 +1431,17 @@ export async function POST(request: NextRequest) {
     google?: { accessToken: string; customerId: string };
   };
 
-  if (!process.env.ANTHROPIC_API_KEY) return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 });
-  if (!meta && !google) return NextResponse.json({ error: "No platforms connected" }, { status: 400 });
+  if (!process.env.ANTHROPIC_API_KEY)
+    return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 });
+  if (!meta && !google)
+    return NextResponse.json({ error: "No platforms connected" }, { status: 400 });
 
   const creds: Credentials = { meta, google };
   const availableTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
-  const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
+  const connectedPlatforms = [
+    meta ? "Meta Ads (Facebook/Instagram)" : null,
+    google ? "Google Ads" : null,
+  ].filter(Boolean).join(" and ");
 
   const systemWithContext =
     `${SYSTEM_PROMPT}\n\nCONNECTED PLATFORMS: ${connectedPlatforms}.\n` +
@@ -1467,96 +1452,185 @@ export async function POST(request: NextRequest) {
     `${google ? `Google Ads Customer ID: ${google.customerId}` : "Google Ads: NOT CONNECTED"}`;
 
   const encoder = new TextEncoder();
+
+  // ── Helper: safely enqueue a JSON line ──────────────────────────────────────
+  let controllerClosed = false;
+
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => {
-        try { controller.enqueue(encoder.encode(JSON.stringify(data) + "\n")); } catch { /* closed */ }
+        if (controllerClosed) return;
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
+        } catch {
+          controllerClosed = true;
+        }
       };
+
+      // Keepalive ping every 20s to prevent proxy timeouts
+      const pingInterval = setInterval(() => {
+        send({ type: "ping" });
+      }, 20_000);
+
       try {
+        // Build initial Claude messages from client history
         const claudeMessages: ClaudeMessage[] = messages.map((m) => {
           if (Array.isArray(m.content)) {
-            return { role: m.role as "user" | "assistant", content: m.content as ClaudeContentBlock[] };
+            return {
+              role: m.role as "user" | "assistant",
+              content: m.content as ClaudeContentBlock[],
+            };
           }
-          return { role: m.role as "user" | "assistant", content: m.content as string };
+          return {
+            role: m.role as "user" | "assistant",
+            content: m.content as string,
+          };
         });
 
+        // ── Agentic loop ────────────────────────────────────────────────────
         let iteration = 0;
-        while (iteration++ < 15) {
-          const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-              "anthropic-version": "2023-06-01",
-            },
-            body: JSON.stringify({
-              model: CLAUDE_MODEL,
-              max_tokens: 4096,
-              system: systemWithContext,
-              tools: availableTools,
-              messages: claudeMessages,
-            }),
-          });
+        const MAX_ITERATIONS = 20;
 
-          if (!claudeRes.ok) {
-            const err = await claudeRes.json().catch(() => ({ message: claudeRes.statusText }));
-            send({ type: "error", text: `Claude API error ${claudeRes.status}: ${JSON.stringify(err)}` });
+        while (iteration < MAX_ITERATIONS) {
+          iteration++;
+
+          let claudeRes: Response;
+          try {
+            claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+                "anthropic-version": "2023-06-01",
+              },
+              body: JSON.stringify({
+                model: CLAUDE_MODEL,
+                max_tokens: 4096,
+                system: systemWithContext,
+                tools: availableTools,
+                messages: claudeMessages,
+              }),
+            });
+          } catch (fetchErr) {
+            send({ type: "error", text: `Failed to reach Claude API: ${String(fetchErr)}` });
             break;
           }
 
-          const { content, stop_reason } = (await claudeRes.json()) as { content: ClaudeContentBlock[]; stop_reason: string };
+          if (!claudeRes.ok) {
+            let errBody: unknown;
+            try { errBody = await claudeRes.json(); } catch { errBody = { message: claudeRes.statusText }; }
+            send({ type: "error", text: `Claude API error ${claudeRes.status}: ${JSON.stringify(errBody)}` });
+            break;
+          }
 
+          let responseJson: { content: ClaudeContentBlock[]; stop_reason: string };
+          try {
+            responseJson = await claudeRes.json() as { content: ClaudeContentBlock[]; stop_reason: string };
+          } catch (parseErr) {
+            send({ type: "error", text: `Failed to parse Claude response: ${String(parseErr)}` });
+            break;
+          }
+
+          const { content, stop_reason } = responseJson;
+
+          // Stream all text blocks immediately
           for (const block of content) {
-            if (block.type === "text" && (block as { type: "text"; text: string }).text.trim()) {
-              send({ type: "text", text: (block as { type: "text"; text: string }).text });
+            if (block.type === "text") {
+              const textBlock = block as { type: "text"; text: string };
+              if (textBlock.text.trim()) {
+                send({ type: "text", text: textBlock.text });
+              }
             }
           }
 
+          // Natural end
           if (stop_reason === "end_turn") break;
 
+          // Tool use
           if (stop_reason === "tool_use") {
+            // Append assistant turn (with tool_use blocks) to history
             claudeMessages.push({ role: "assistant", content });
+
             const toolResults: ClaudeContentBlock[] = [];
 
             for (const block of content) {
               if (block.type !== "tool_use") continue;
+
               const toolBlock = block as { type: "tool_use"; id: string; name: string; input: ToolInput };
-              const platform = toolBlock.name.startsWith("meta_") ? "meta" : "google";
-              send({ type: "tool_call", tool: toolBlock.name, platform, input: toolBlock.input, text: fmtCall(toolBlock.name, toolBlock.input) });
-              send({ type: "ping" });
+              const platform: "meta" | "google" = toolBlock.name.startsWith("meta_") ? "meta" : "google";
+
+              send({
+                type: "tool_call",
+                tool: toolBlock.name,
+                platform,
+                input: toolBlock.input,
+                text: fmtCall(toolBlock.name, toolBlock.input),
+              });
+
+              // Slightly longer timeout for image uploads
+              const timeoutMs = toolBlock.name === "meta_upload_ad_image" ? 120_000 : 45_000;
 
               let resultText: string;
-              const timeout = toolBlock.name === "meta_upload_ad_image" ? 120_000 : 30_000;
               try {
                 const result = await Promise.race([
                   executeTool(toolBlock.name, toolBlock.input, creds),
-                  new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Tool ${toolBlock.name} timed out`)), timeout)),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error(`Tool "${toolBlock.name}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+                  ),
                 ]);
+
                 resultText = JSON.stringify(result);
-                send({ type: "tool_result", tool: toolBlock.name, platform, text: fmtResult(toolBlock.name, result), data: result });
-              } catch (err) {
-                resultText = JSON.stringify({ error: String(err) });
-                send({ type: "error", text: "Tool error: " + String(err) });
+                send({
+                  type: "tool_result",
+                  tool: toolBlock.name,
+                  platform,
+                  text: fmtResult(toolBlock.name, result),
+                  data: result,
+                });
+              } catch (toolErr) {
+                const errMsg = String(toolErr);
+                resultText = JSON.stringify({ error: errMsg });
+                send({ type: "tool_result", tool: toolBlock.name, platform, text: `Error: ${errMsg}`, data: { error: errMsg } });
               }
 
-              toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: resultText });
+              toolResults.push({
+                type: "tool_result",
+                tool_use_id: toolBlock.id,
+                content: resultText,
+              });
             }
+
+            // Append tool results and continue loop
             claudeMessages.push({ role: "user", content: toolResults });
             continue;
           }
+
+          // Any other stop reason (max_tokens, etc.) — break
           break;
         }
+
+        if (iteration >= MAX_ITERATIONS) {
+          send({ type: "error", text: "Reached maximum tool call iterations (20). Please try a more specific request." });
+        }
+
       } catch (err) {
         send({ type: "error", text: `Server error: ${String(err)}` });
       } finally {
+        clearInterval(pingInterval);
         send({ type: "done" });
+        controllerClosed = true;
         try { controller.close(); } catch { /* already closed */ }
       }
     },
   });
 
   return new Response(stream, {
-    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
   });
 }
 
@@ -1617,7 +1691,8 @@ function fmtCall(name: string, i: ToolInput): string {
 function fmtResult(name: string, result: unknown): string {
   const r = result as Record<string, unknown>;
   if (r?.error) return `Error: ${JSON.stringify(r.error)}`;
-  const data = r?.data as unknown[] || r?.results as unknown[] || r?.interests as unknown[] ||
+  const data =
+    r?.data as unknown[] || r?.results as unknown[] || r?.interests as unknown[] ||
     r?.businesses as unknown[] || r?.catalogs as unknown[] || r?.products as unknown[] ||
     r?.product_sets as unknown[] || r?.pages as unknown[] || r?.pixels as unknown[] ||
     r?.business_users as unknown[] || r?.owned_ad_accounts as unknown[];
@@ -1632,11 +1707,11 @@ function fmtResult(name: string, result: unknown): string {
   if (name === "meta_list_catalogs") return `Found ${r?.count ?? "?"} catalog(s)`;
   if (name === "meta_list_catalog_product_sets") return `Found ${r?.count ?? "?"} product set(s)`;
   if (name === "meta_list_catalog_products") return `Found ${r?.count ?? "?"} product(s)`;
-  if (name === "meta_get_catalog_diagnostics") return `Diagnostics loaded`;
+  if (name === "meta_get_catalog_diagnostics") return "Diagnostics loaded";
   if (name.includes("list_") || (name.includes("get_") && !name.includes("metrics") && !name.includes("insights")))
     return `Found ${count ?? "?"} item${count !== 1 ? "s" : ""}`;
-  if (name.includes("create_")) return r?.id || r?.resource_name || r?.ad_id || r?.success ? `Created ✓` : `Failed: ${JSON.stringify(r)}`;
-  if (name.includes("update_") || name.includes("bulk_")) return r?.success !== false ? `Updated ✓` : `Failed: ${JSON.stringify(r)}`;
+  if (name.includes("create_")) return r?.id || r?.resource_name || r?.ad_id || r?.success ? "Created ✓" : `Failed: ${JSON.stringify(r)}`;
+  if (name.includes("update_") || name.includes("bulk_")) return r?.success !== false ? "Updated ✓" : `Failed: ${JSON.stringify(r)}`;
   if (name.includes("insights") || name.includes("metrics")) return `Metrics loaded (${count ?? "?"} rows)`;
   return "Done";
 }
