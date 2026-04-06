@@ -1290,13 +1290,17 @@ export async function POST(request: NextRequest) {
   const encoder = new TextEncoder();
   let controllerClosed = false;
 
-  // Extract image blocks from the last user message for re-injection in nudges
+  // ── Extract image blocks from the ENTIRE conversation (not just last message) ──
+  // We look at the last user message for re-injection nudges
   const lastUserMsg = messages[messages.length - 1];
   const imageBlocks: ClaudeContentBlock[] = Array.isArray(lastUserMsg?.content)
     ? (lastUserMsg.content as Array<{ type: string; [key: string]: unknown }>)
         .filter((b) => b.type === "image")
         .map((b) => b as unknown as ClaudeContentBlock)
     : [];
+
+  // Detect if ANY message in the conversation contains images (for context)
+  const conversationHasImages = imageBlocks.length > 0;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -1316,6 +1320,9 @@ export async function POST(request: NextRequest) {
 
         let iteration = 0;
         const MAX_ITERATIONS = 20;
+
+        // ── FIX: Track whether meta_upload_ad_image has succeeded in this session ──
+        let hasUploadedImageSuccessfully = false;
 
         while (iteration < MAX_ITERATIONS) {
           iteration++;
@@ -1367,17 +1374,29 @@ export async function POST(request: NextRequest) {
           if (stop_reason === "end_turn") {
             const lastTextBlock = content.filter((b) => b.type === "text").pop() as { type: "text"; text: string } | undefined;
             const lastText = lastTextBlock?.text?.trim() ?? "";
+
+            // ── FIX: If there are image blocks in the request but the image hasn't
+            // been uploaded yet, Claude is pausing mid-flow. Force it to continue. ──
+            const pendingImageUpload = conversationHasImages && !hasUploadedImageSuccessfully;
+
             const looksLikeUnfinishedPlan =
+              pendingImageUpload ||
               lastText.endsWith(":") ||
-              /\b(now i'?ll|let me now|i will now|next[,.]? i'?ll|proceeding to|uploading now|creating now)\b/i.test(lastText);
+              /\b(now i'?ll|let me now|i will now|next[,.]? i'?ll|proceeding to|uploading now|creating now|let me first|then (i'?ll |)upload|then (i'?ll |)create|i'?ll (now |)upload|i'?ll (now |)create the ad)\b/i.test(lastText);
 
             if (looksLikeUnfinishedPlan && iteration < MAX_ITERATIONS) {
               claudeMessages.push({ role: "assistant", content });
+
+              // Tailor the nudge message based on what's missing
+              const nudgeText = pendingImageUpload
+                ? "You have gathered the campaign and ad set data. You MUST now call meta_upload_ad_image immediately using the image attached to the user's original message. Do not write any text — call the tool directly now."
+                : "Continue — execute the next tool call now. Do not describe what you are about to do, just call the tool.";
+
               claudeMessages.push({
                 role: "user",
                 content: [
-                  ...imageBlocks,
-                  { type: "text", text: "Continue — execute the next tool call now. Do not describe what you are about to do, just call the tool." },
+                  ...imageBlocks, // re-inject the image so Claude can access base64 data
+                  { type: "text", text: nudgeText },
                 ] as ClaudeContentBlock[],
               });
               continue;
@@ -1422,12 +1441,13 @@ export async function POST(request: NextRequest) {
                 resultText = JSON.stringify(result);
                 send({ type: "tool_result", tool: toolBlock.name, platform, text: fmtResult(toolBlock.name, result), data: result });
 
-                // Check if this was a successful image upload
+                // ── FIX: Track successful image uploads across ALL iterations ──
                 if (toolBlock.name === "meta_upload_ad_image") {
                   try {
                     const parsed = JSON.parse(resultText) as Record<string, unknown>;
                     if (parsed?.image_hash && parsed?.success === true) {
                       justUploadedImage = true;
+                      hasUploadedImageSuccessfully = true; // persist across iterations
                     }
                   } catch { /* ignore */ }
                 }
@@ -1441,10 +1461,10 @@ export async function POST(request: NextRequest) {
               toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: resultText });
             }
 
-            // Push ALL tool results as a single user turn (fixes the "multiple tool_result blocks" error)
+            // Push ALL tool results as a single user turn
             claudeMessages.push({ role: "user", content: toolResults });
 
-            // If we just uploaded an image, inject a forcing nudge AFTER the tool results
+            // If we just uploaded an image successfully, inject a hard forcing nudge
             if (justUploadedImage) {
               claudeMessages.push({
                 role: "user",
