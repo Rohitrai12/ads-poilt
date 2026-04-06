@@ -48,6 +48,7 @@ type ChatSession = {
   id: string;
   title: string;
   messages: Message[];
+  scopeKey?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -174,10 +175,15 @@ function groupSessions(sessions: ChatSession[]) {
 
 const LS_SESSIONS = "unified_ads_sessions";
 const LS_META_AUTH = "unified_ads_meta_auth";
+const LS_META_AUTHS = "unified_ads_meta_auths";
+const LS_META_ACTIVE = "unified_ads_meta_active";
 const LS_GOOGLE_AUTH = "unified_ads_google_auth";
 
 function loadSessions(): ChatSession[] {
-  try { return JSON.parse(localStorage.getItem(LS_SESSIONS) ?? "[]"); }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LS_SESSIONS) ?? "[]") as ChatSession[];
+    return parsed.map((s) => ({ ...s, scopeKey: s.scopeKey ?? "legacy" }));
+  }
   catch { return []; }
 }
 function saveSessions(s: ChatSession[]) {
@@ -531,9 +537,12 @@ function UserMessage({ msg }: { msg: Message }) {
 
 // ─── Connection Panel ─────────────────────────────────────────────────────────
 function ConnectionPanel({
-  metaCreds, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
+  metaCreds, metaConnections, activeMetaAccountId, onSwitchMetaAccount, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
 }: {
   metaCreds: MetaCreds; googleCreds: GoogleCreds;
+  metaConnections: NonNullable<MetaCreds>[];
+  activeMetaAccountId: string | null;
+  onSwitchMetaAccount: (accountId: string) => void;
   onConnectMeta: (token: string, accountId: string, account: MetaAccount) => void;
   onConnectGoogle: (token: string, customerId: string, account: GoogleAccount) => void;
   onDisconnectMeta: () => void; onDisconnectGoogle: () => void;
@@ -603,8 +612,30 @@ function ConnectionPanel({
         </div>
         {metaCreds ? (
           <div className="rounded-lg bg-zinc-800/50 px-2.5 py-2 text-xs space-y-1">
+            {metaConnections.length > 1 && (
+              <div className="space-y-1">
+                <div className="text-[10px] text-zinc-500">Active account</div>
+                <select
+                  value={activeMetaAccountId ?? metaCreds.adAccountId}
+                  onChange={(e) => onSwitchMetaAccount(e.target.value)}
+                  className="h-7 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 text-[11px] text-zinc-300 outline-none"
+                >
+                  {metaConnections.map((conn) => (
+                    <option key={conn.adAccountId} value={conn.adAccountId}>
+                      {conn.account.name} (act_{conn.adAccountId})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="font-medium text-zinc-300 truncate">{metaCreds.account.name}</div>
             <div className="text-zinc-500 text-[10px] truncate">act_{metaCreds.adAccountId} · {metaCreds.account.currency}</div>
+            <button
+              onClick={redirectToFb}
+              className="mt-1 inline-flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+            >
+              + Add another account
+            </button>
             {metaCreds.page && (
               <div className="flex items-center gap-1 text-[10px] text-zinc-500 truncate">
                 <span className="text-zinc-700 shrink-0">Page:</span>
@@ -708,12 +739,15 @@ function DrawerBackdrop({ onClick }: { onClick: () => void }) {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar({
   sessions, activeId, onSelect, onNew, onDelete,
-  metaCreds, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
+  metaCreds, metaConnections, activeMetaAccountId, onSwitchMetaAccount, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
   collapsed, onToggle, mobileOpen, onMobileClose,
 }: {
   sessions: ChatSession[]; activeId: string | null;
   onSelect: (id: string) => void; onNew: () => void; onDelete: (id: string) => void;
   metaCreds: MetaCreds; googleCreds: GoogleCreds;
+  metaConnections: NonNullable<MetaCreds>[];
+  activeMetaAccountId: string | null;
+  onSwitchMetaAccount: (accountId: string) => void;
   onConnectMeta: (t: string, a: string, acct: MetaAccount) => void;
   onConnectGoogle: (t: string, c: string, acct: GoogleAccount) => void;
   onDisconnectMeta: () => void; onDisconnectGoogle: () => void;
@@ -765,6 +799,9 @@ function Sidebar({
           <div className="shrink-0 border-b border-zinc-800/60 px-3 py-3">
             <ConnectionPanel
               metaCreds={metaCreds} googleCreds={googleCreds}
+              metaConnections={metaConnections}
+              activeMetaAccountId={activeMetaAccountId}
+              onSwitchMetaAccount={onSwitchMetaAccount}
               onConnectMeta={onConnectMeta} onConnectGoogle={onConnectGoogle}
               onDisconnectMeta={onDisconnectMeta} onDisconnectGoogle={onDisconnectGoogle}
             />
@@ -868,7 +905,8 @@ function UnifiedAdsChatInner() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  const [metaCreds, setMetaCreds] = useState<MetaCreds>(null);
+  const [metaCredsByAccount, setMetaCredsByAccount] = useState<Record<string, NonNullable<MetaCreds>>>({});
+  const [activeMetaAccountId, setActiveMetaAccountId] = useState<string | null>(null);
   const [googleCreds, setGoogleCreds] = useState<GoogleCreds>(null);
   const [metaPending, setMetaPending] = useState<MetaPending>(null);
 
@@ -900,6 +938,10 @@ function UnifiedAdsChatInner() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const metaCreds = activeMetaAccountId ? (metaCredsByAccount[activeMetaAccountId] ?? null) : null;
+  const metaConnections = Object.values(metaCredsByAccount);
+  const activeScopeKey = `meta:${metaCreds?.adAccountId ?? "none"}|google:${googleCreds?.customerId ?? "none"}`;
+  const scopedSessions = sessions.filter((s) => (s.scopeKey ?? "legacy") === activeScopeKey);
 
   const isCoolingDown = cooldownRemaining > 0;
 
@@ -915,7 +957,29 @@ function UnifiedAdsChatInner() {
   // ── Load auth from localStorage + handle OAuth callback params ──────────
   useEffect(() => {
     if (typeof window === "undefined") return;
-    try { const m = localStorage.getItem(LS_META_AUTH); if (m) setMetaCreds(JSON.parse(m)); } catch { /**/ }
+    try {
+      const mapRaw = localStorage.getItem(LS_META_AUTHS);
+      const activeRaw = localStorage.getItem(LS_META_ACTIVE);
+      if (mapRaw) {
+        const parsed = JSON.parse(mapRaw) as Record<string, NonNullable<MetaCreds>>;
+        setMetaCredsByAccount(parsed);
+        if (activeRaw && parsed[activeRaw]) setActiveMetaAccountId(activeRaw);
+        else {
+          const first = Object.keys(parsed)[0] ?? null;
+          setActiveMetaAccountId(first);
+        }
+      } else {
+        const m = localStorage.getItem(LS_META_AUTH);
+        if (m) {
+          const single = JSON.parse(m) as NonNullable<MetaCreds>;
+          const id = single.adAccountId;
+          setMetaCredsByAccount({ [id]: single });
+          setActiveMetaAccountId(id);
+          localStorage.setItem(LS_META_AUTHS, JSON.stringify({ [id]: single }));
+          localStorage.setItem(LS_META_ACTIVE, id);
+        }
+      }
+    } catch { /**/ }
     try { const g = localStorage.getItem(LS_GOOGLE_AUTH); if (g) setGoogleCreds(JSON.parse(g)); } catch { /**/ }
 
     const params = new URLSearchParams(window.location.search);
@@ -943,6 +1007,15 @@ function UnifiedAdsChatInner() {
     }
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(LS_META_AUTHS, JSON.stringify(metaCredsByAccount));
+      if (activeMetaAccountId) localStorage.setItem(LS_META_ACTIVE, activeMetaAccountId);
+      else localStorage.removeItem(LS_META_ACTIVE);
+    } catch { /**/ }
+  }, [metaCredsByAccount, activeMetaAccountId]);
+
   // ── Auto-scroll ──────────────────────────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -958,7 +1031,11 @@ function UnifiedAdsChatInner() {
   // ── Credential handlers ──────────────────────────────────────────────────
   const connectMetaManual = useCallback((token: string, accountId: string, account: MetaAccount) => {
     const creds: NonNullable<MetaCreds> = { accessToken: token, adAccountId: accountId, account, page: null, pixel: null };
-    setMetaCreds(creds);
+    setMetaCredsByAccount((prev) => ({ ...prev, [accountId]: creds }));
+    setActiveMetaAccountId(accountId);
+    setMessages([]);
+    setActiveSessionId(null);
+    setAttachedImages([]);
     try { localStorage.setItem(LS_META_AUTH, JSON.stringify(creds)); } catch { /**/ }
   }, []);
 
@@ -976,7 +1053,11 @@ function UnifiedAdsChatInner() {
       page: selection.page,
       pixel: selection.pixel,
     };
-    setMetaCreds(creds);
+    setMetaCredsByAccount((prev) => ({ ...prev, [id]: creds }));
+    setActiveMetaAccountId(id);
+    setMessages([]);
+    setActiveSessionId(null);
+    setAttachedImages([]);
     setMetaPending(null);
     try { localStorage.setItem(LS_META_AUTH, JSON.stringify(creds)); } catch { /**/ }
   }, []);
@@ -988,8 +1069,25 @@ function UnifiedAdsChatInner() {
   }, []);
 
   const disconnectMeta = useCallback(() => {
-    setMetaCreds(null);
+    setMetaCredsByAccount((prev) => {
+      if (!activeMetaAccountId) return prev;
+      const next = { ...prev };
+      delete next[activeMetaAccountId];
+      const remaining = Object.keys(next);
+      setActiveMetaAccountId(remaining[0] ?? null);
+      return next;
+    });
+    setMessages([]);
+    setActiveSessionId(null);
+    setAttachedImages([]);
     try { localStorage.removeItem(LS_META_AUTH); } catch { /**/ }
+  }, [activeMetaAccountId]);
+
+  const switchMetaAccount = useCallback((accountId: string) => {
+    setActiveMetaAccountId(accountId);
+    setMessages([]);
+    setActiveSessionId(null);
+    setAttachedImages([]);
   }, []);
 
   const disconnectGoogle = useCallback(() => {
@@ -1041,14 +1139,14 @@ function UnifiedAdsChatInner() {
 
   const loadSession = useCallback((id: string) => {
     setSessions((prev) => {
-      const s = prev.find((s) => s.id === id);
+      const s = prev.find((s) => s.id === id && (s.scopeKey ?? "legacy") === activeScopeKey);
       if (s) {
         setMessages(s.messages);
         setActiveSessionId(id);
       }
       return prev;
     });
-  }, []);
+  }, [activeScopeKey]);
 
   const deleteSession = useCallback((id: string) => {
     setSessions((prev) => prev.filter((s) => s.id !== id));
@@ -1130,6 +1228,7 @@ function UnifiedAdsChatInner() {
           id: sessionId,
           title,
           messages: newMessages,
+          scopeKey: activeScopeKey,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },
@@ -1146,7 +1245,9 @@ function UnifiedAdsChatInner() {
         // Sync session separately (no nested state calls)
         setSessions((prevSessions) =>
           prevSessions.map((s) =>
-            s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s
+            s.id === sessionId && (s.scopeKey ?? "legacy") === activeScopeKey
+              ? { ...s, messages: updated, updatedAt: Date.now() }
+              : s
           )
         );
         return updated;
@@ -1275,6 +1376,7 @@ function UnifiedAdsChatInner() {
     metaCreds,
     googleCreds,
     startCooldown,
+    activeScopeKey,
   ]);
 
   // ── Textarea auto-resize ─────────────────────────────────────────────────
@@ -1298,6 +1400,15 @@ function UnifiedAdsChatInner() {
 
   const sendDisabled =
     (!input.trim() && attachedImages.length === 0) || loading || !isConnected || isCoolingDown;
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const existsInScope = scopedSessions.some((s) => s.id === activeSessionId);
+    if (!existsInScope) {
+      setActiveSessionId(null);
+      setMessages([]);
+    }
+  }, [activeSessionId, scopedSessions]);
 
   return (
     <>
@@ -1362,12 +1473,15 @@ function UnifiedAdsChatInner() {
         {/* ── Body ── */}
         <div className="flex min-h-0 flex-1">
           <Sidebar
-            sessions={sessions}
+            sessions={scopedSessions}
             activeId={activeSessionId}
             onSelect={loadSession}
             onNew={startNewChat}
             onDelete={deleteSession}
             metaCreds={metaCreds}
+            metaConnections={metaConnections}
+            activeMetaAccountId={activeMetaAccountId}
+            onSwitchMetaAccount={switchMetaAccount}
             googleCreds={googleCreds}
             onConnectMeta={connectMetaManual}
             onConnectGoogle={connectGoogle}
