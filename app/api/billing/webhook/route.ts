@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
       priceId,
       status: sub.status,
       trialEndsAt: fromUnix(sub.trial_end),
-      currentPeriodEnd: fromUnix(sub.items.data[0]?.current_period_end ?? sub.current_period_end),
+      currentPeriodEnd: fromUnix(sub.items.data[0]?.current_period_end ?? null),
     })
   }
 
