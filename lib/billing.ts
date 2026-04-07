@@ -97,7 +97,7 @@ function currentMonth() {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`
 }
 
-function detectPlanFromPriceId(priceId: string | null): PlanTier {
+export function detectPlanFromPriceId(priceId: string | null): PlanTier {
   if (!priceId) return "free"
   if (priceId === process.env.STRIPE_PRICE_AGENCY) return "agency"
   if (priceId === process.env.STRIPE_PRICE_PRO) return "pro"
@@ -255,8 +255,10 @@ export async function updateSubscriptionFromStripe(args: {
   status: string | null
   trialEndsAt: Date | null
   currentPeriodEnd: Date | null
+  planTier?: PlanTier | null
 }) {
   await ensureSchema()
+  const planTier = args.planTier ?? detectPlanFromPriceId(args.priceId)
   await pool.execute(
     `UPDATE users
      SET stripe_subscription_id = ?, stripe_price_id = ?, subscription_status = ?, plan_tier = ?, trial_ends_at = ?, current_period_end = ?
@@ -265,7 +267,7 @@ export async function updateSubscriptionFromStripe(args: {
       args.subscriptionId,
       args.priceId,
       args.status,
-      detectPlanFromPriceId(args.priceId),
+      planTier,
       args.trialEndsAt,
       args.currentPeriodEnd,
       args.customerId,

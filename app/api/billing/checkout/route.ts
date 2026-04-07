@@ -29,10 +29,12 @@ export async function POST(request: NextRequest) {
       mode: "subscription",
       customer: customerId,
       line_items: [{ price: priceId, quantity: 1 }],
+      metadata: { plan_tier: plan },
       success_url: `${appUrl}/dashboard/billing?checkout=success`,
       cancel_url: `${appUrl}/dashboard/billing?checkout=cancelled`,
       subscription_data: {
         trial_period_days: trialDays,
+        metadata: { plan_tier: plan },
       },
       allow_promotion_codes: true,
     })
