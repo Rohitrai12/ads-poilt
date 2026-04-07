@@ -46,22 +46,33 @@ export async function ensureSchema() {
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `)
-    await conn.execute(`
-      ALTER TABLE users
-      ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255) NULL,
-      ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255) NULL,
-      ADD COLUMN IF NOT EXISTS stripe_price_id VARCHAR(255) NULL,
-      ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) NULL,
-      ADD COLUMN IF NOT EXISTS plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',
-      ADD COLUMN IF NOT EXISTS usage_month VARCHAR(7) NULL,
-      ADD COLUMN IF NOT EXISTS monthly_message_count INT UNSIGNED NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS monthly_report_count INT UNSIGNED NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS trial_ends_at DATETIME NULL,
-      ADD COLUMN IF NOT EXISTS current_period_end DATETIME NULL
-    `)
-    await conn.execute(`
-      CREATE INDEX IF NOT EXISTS idx_users_stripe_customer_id ON users (stripe_customer_id)
-    `)
+
+    const addColumn = async (sql: string) => {
+      try {
+        await conn.execute(sql)
+      } catch (err) {
+        const code = (err as { code?: string }).code
+        if (code !== "ER_DUP_FIELDNAME") throw err
+      }
+    }
+
+    await addColumn("ALTER TABLE users ADD COLUMN stripe_customer_id VARCHAR(255) NULL")
+    await addColumn("ALTER TABLE users ADD COLUMN stripe_subscription_id VARCHAR(255) NULL")
+    await addColumn("ALTER TABLE users ADD COLUMN stripe_price_id VARCHAR(255) NULL")
+    await addColumn("ALTER TABLE users ADD COLUMN subscription_status VARCHAR(50) NULL")
+    await addColumn("ALTER TABLE users ADD COLUMN plan_tier VARCHAR(20) NOT NULL DEFAULT 'free'")
+    await addColumn("ALTER TABLE users ADD COLUMN usage_month VARCHAR(7) NULL")
+    await addColumn("ALTER TABLE users ADD COLUMN monthly_message_count INT UNSIGNED NOT NULL DEFAULT 0")
+    await addColumn("ALTER TABLE users ADD COLUMN monthly_report_count INT UNSIGNED NOT NULL DEFAULT 0")
+    await addColumn("ALTER TABLE users ADD COLUMN trial_ends_at DATETIME NULL")
+    await addColumn("ALTER TABLE users ADD COLUMN current_period_end DATETIME NULL")
+
+    try {
+      await conn.execute("CREATE INDEX idx_users_stripe_customer_id ON users (stripe_customer_id)")
+    } catch (err) {
+      const code = (err as { code?: string }).code
+      if (code !== "ER_DUP_KEYNAME") throw err
+    }
     schemaInitialised = true
   } finally {
     conn.release()

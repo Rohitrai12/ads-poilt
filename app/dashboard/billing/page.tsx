@@ -31,6 +31,7 @@ function fmtDate(iso: string | null) {
 export default function BillingPage() {
   const [billing, setBilling] = useState<Billing | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
 
   async function refresh() {
     const res = await fetch("/api/billing/status")
@@ -45,13 +46,19 @@ export default function BillingPage() {
 
   async function startCheckout(plan: "pro" | "agency") {
     setLoading(true)
+    setError("")
     try {
       const res = await fetch("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ plan }),
       })
-      const data = (await res.json()) as { url?: string }
+      const raw = await res.text()
+      const data = raw ? (JSON.parse(raw) as { url?: string; error?: string; details?: string }) : {}
+      if (!res.ok) {
+        setError(data.details ? `${data.error ?? "Checkout failed"}: ${data.details}` : (data.error ?? "Checkout failed"))
+        return
+      }
       if (data.url) window.location.href = data.url
     } finally {
       setLoading(false)
@@ -60,9 +67,15 @@ export default function BillingPage() {
 
   async function openPortal() {
     setLoading(true)
+    setError("")
     try {
       const res = await fetch("/api/billing/portal", { method: "POST" })
-      const data = (await res.json()) as { url?: string }
+      const raw = await res.text()
+      const data = raw ? (JSON.parse(raw) as { url?: string; error?: string; details?: string }) : {}
+      if (!res.ok) {
+        setError(data.details ? `${data.error ?? "Portal failed"}: ${data.details}` : (data.error ?? "Portal failed"))
+        return
+      }
       if (data.url) window.location.href = data.url
     } finally {
       setLoading(false)
@@ -100,6 +113,7 @@ export default function BillingPage() {
           Open billing portal
         </button>
       </div>
+      {error && <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
     </div>
   )
 }
