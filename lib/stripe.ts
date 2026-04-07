@@ -1,6 +1,6 @@
 import Stripe from "stripe"
 
-export const STRIPE_API_VERSION: Stripe.LatestApiVersion = "2025-03-31.basil"
+export const STRIPE_API_VERSION = "2025-03-31.basil"
 
 let stripeClient: Stripe | null = null
 
@@ -15,4 +15,3 @@ export function getStripe() {
   })
   return stripeClient
 }
-
