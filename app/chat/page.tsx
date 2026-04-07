@@ -88,6 +88,13 @@ type MetaPending = {
   pixels: MetaPixel[];
 } | null;
 
+type BillingSummary = {
+  planTier: "free" | "pro" | "agency";
+  limits: {
+    adAccountsLimit: number | "unlimited";
+  };
+} | null;
+
 // ─── OAuth / API config ───────────────────────────────────────────────────────
 const FB_APP_ID = process.env.NEXT_PUBLIC_FACEBOOK_APP_ID ?? "";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
@@ -537,12 +544,14 @@ function UserMessage({ msg }: { msg: Message }) {
 
 // ─── Connection Panel ─────────────────────────────────────────────────────────
 function ConnectionPanel({
-  metaCreds, metaConnections, activeMetaAccountId, onSwitchMetaAccount, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
+  metaCreds, metaConnections, activeMetaAccountId, onSwitchMetaAccount, canAddMetaAccount, addMetaBlockedReason, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
 }: {
   metaCreds: MetaCreds; googleCreds: GoogleCreds;
   metaConnections: NonNullable<MetaCreds>[];
   activeMetaAccountId: string | null;
   onSwitchMetaAccount: (accountId: string) => void;
+  canAddMetaAccount: boolean;
+  addMetaBlockedReason: string;
   onConnectMeta: (token: string, accountId: string, account: MetaAccount) => void;
   onConnectGoogle: (token: string, customerId: string, account: GoogleAccount) => void;
   onDisconnectMeta: () => void; onDisconnectGoogle: () => void;
@@ -631,11 +640,21 @@ function ConnectionPanel({
             <div className="font-medium text-zinc-300 truncate">{metaCreds.account.name}</div>
             <div className="text-zinc-500 text-[10px] truncate">act_{metaCreds.adAccountId} · {metaCreds.account.currency}</div>
             <button
-              onClick={redirectToFb}
-              className="mt-1 inline-flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+              onClick={() => {
+                if (!canAddMetaAccount) {
+                  setMetaError(addMetaBlockedReason);
+                  return;
+                }
+                redirectToFb();
+              }}
+              disabled={!canAddMetaAccount}
+              className="mt-1 inline-flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors disabled:opacity-40"
             >
               + Add another account
             </button>
+            {!canAddMetaAccount && (
+              <div className="text-[9px] text-amber-500/80">{addMetaBlockedReason}</div>
+            )}
             {metaCreds.page && (
               <div className="flex items-center gap-1 text-[10px] text-zinc-500 truncate">
                 <span className="text-zinc-700 shrink-0">Page:</span>
@@ -662,7 +681,7 @@ function ConnectionPanel({
                 <Input placeholder="Account ID" value={metaAcctId.replace(/^act_/i, "")} onChange={(e) => setMetaAcctId(e.target.value)}
                   className="h-7 pl-8 bg-zinc-800/60 border-zinc-700 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus-visible:border-[#1877f2]/50 focus-visible:ring-0" />
               </div>
-              <button onClick={connectMetaManual} disabled={metaLoading || !metaToken.trim() || !metaAcctId.trim()}
+              <button onClick={connectMetaManual} disabled={metaLoading || !metaToken.trim() || !metaAcctId.trim() || !canAddMetaAccount}
                 className="flex h-7 shrink-0 items-center gap-1 rounded-lg bg-[#1877f2] px-2.5 text-[10px] font-semibold text-white hover:bg-[#166fe5] disabled:opacity-40 transition-colors whitespace-nowrap">
                 {metaLoading && <svg width="10" height="10" className="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>}
                 Connect
@@ -739,7 +758,7 @@ function DrawerBackdrop({ onClick }: { onClick: () => void }) {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar({
   sessions, activeId, onSelect, onNew, onDelete,
-  metaCreds, metaConnections, activeMetaAccountId, onSwitchMetaAccount, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
+  metaCreds, metaConnections, activeMetaAccountId, onSwitchMetaAccount, canAddMetaAccount, addMetaBlockedReason, googleCreds, onConnectMeta, onConnectGoogle, onDisconnectMeta, onDisconnectGoogle,
   collapsed, onToggle, mobileOpen, onMobileClose,
 }: {
   sessions: ChatSession[]; activeId: string | null;
@@ -748,6 +767,8 @@ function Sidebar({
   metaConnections: NonNullable<MetaCreds>[];
   activeMetaAccountId: string | null;
   onSwitchMetaAccount: (accountId: string) => void;
+  canAddMetaAccount: boolean;
+  addMetaBlockedReason: string;
   onConnectMeta: (t: string, a: string, acct: MetaAccount) => void;
   onConnectGoogle: (t: string, c: string, acct: GoogleAccount) => void;
   onDisconnectMeta: () => void; onDisconnectGoogle: () => void;
@@ -802,6 +823,8 @@ function Sidebar({
               metaConnections={metaConnections}
               activeMetaAccountId={activeMetaAccountId}
               onSwitchMetaAccount={onSwitchMetaAccount}
+              canAddMetaAccount={canAddMetaAccount}
+              addMetaBlockedReason={addMetaBlockedReason}
               onConnectMeta={onConnectMeta} onConnectGoogle={onConnectGoogle}
               onDisconnectMeta={onDisconnectMeta} onDisconnectGoogle={onDisconnectGoogle}
             />
@@ -909,6 +932,7 @@ function UnifiedAdsChatInner() {
   const [activeMetaAccountId, setActiveMetaAccountId] = useState<string | null>(null);
   const [googleCreds, setGoogleCreds] = useState<GoogleCreds>(null);
   const [metaPending, setMetaPending] = useState<MetaPending>(null);
+  const [billingSummary, setBillingSummary] = useState<BillingSummary>(null);
 
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
 
@@ -940,6 +964,11 @@ function UnifiedAdsChatInner() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const metaCreds = activeMetaAccountId ? (metaCredsByAccount[activeMetaAccountId] ?? null) : null;
   const metaConnections = Object.values(metaCredsByAccount);
+  const maxMetaAccounts = billingSummary?.limits.adAccountsLimit === "unlimited"
+    ? Number.POSITIVE_INFINITY
+    : Number(billingSummary?.limits.adAccountsLimit ?? 1);
+  const canAddMetaAccount = metaConnections.length < maxMetaAccounts;
+  const addMetaBlockedReason = `Your ${billingSummary?.planTier?.toUpperCase() ?? "FREE"} plan allows ${Number.isFinite(maxMetaAccounts) ? maxMetaAccounts : "unlimited"} ad account${maxMetaAccounts === 1 ? "" : "s"}.`;
   const activeScopeKey = `meta:${metaCreds?.adAccountId ?? "none"}|google:${googleCreds?.customerId ?? "none"}`;
   const scopedSessions = sessions.filter((s) => (s.scopeKey ?? "legacy") === activeScopeKey);
 
@@ -1009,6 +1038,18 @@ function UnifiedAdsChatInner() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    void (async () => {
+      try {
+        const res = await fetch("/api/billing/status", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { billing?: BillingSummary };
+        if (data.billing) setBillingSummary(data.billing);
+      } catch { /**/ }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     try {
       localStorage.setItem(LS_META_AUTHS, JSON.stringify(metaCredsByAccount));
       if (activeMetaAccountId) localStorage.setItem(LS_META_ACTIVE, activeMetaAccountId);
@@ -1030,6 +1071,10 @@ function UnifiedAdsChatInner() {
 
   // ── Credential handlers ──────────────────────────────────────────────────
   const connectMetaManual = useCallback((token: string, accountId: string, account: MetaAccount) => {
+    if (!canAddMetaAccount && !metaCredsByAccount[accountId]) {
+      alert(addMetaBlockedReason);
+      return;
+    }
     const creds: NonNullable<MetaCreds> = { accessToken: token, adAccountId: accountId, account, page: null, pixel: null };
     setMetaCredsByAccount((prev) => ({ ...prev, [accountId]: creds }));
     setActiveMetaAccountId(accountId);
@@ -1037,10 +1082,15 @@ function UnifiedAdsChatInner() {
     setActiveSessionId(null);
     setAttachedImages([]);
     try { localStorage.setItem(LS_META_AUTH, JSON.stringify(creds)); } catch { /**/ }
-  }, []);
+  }, [canAddMetaAccount, metaCredsByAccount, addMetaBlockedReason]);
 
   const handleMetaPickerConfirm = useCallback((selection: MetaSelection) => {
     const id = selection.adAccount.id.replace(/^act_/, "");
+    if (!canAddMetaAccount && !metaCredsByAccount[id]) {
+      alert(addMetaBlockedReason);
+      setMetaPending(null);
+      return;
+    }
     const creds: NonNullable<MetaCreds> = {
       accessToken: selection.accessToken,
       adAccountId: id,
@@ -1060,7 +1110,7 @@ function UnifiedAdsChatInner() {
     setAttachedImages([]);
     setMetaPending(null);
     try { localStorage.setItem(LS_META_AUTH, JSON.stringify(creds)); } catch { /**/ }
-  }, []);
+  }, [canAddMetaAccount, metaCredsByAccount, addMetaBlockedReason]);
 
   const connectGoogle = useCallback((token: string, customerId: string, account: GoogleAccount) => {
     const creds = { accessToken: token, customerId, account };
@@ -1256,6 +1306,7 @@ function UnifiedAdsChatInner() {
 
     try {
       const body: Record<string, unknown> = { messages: historyForApi };
+      body.metaConnectionsCount = metaConnections.length;
       if (metaCreds) {
         body.meta = {
           accessToken: metaCreds.accessToken,
@@ -1374,6 +1425,7 @@ function UnifiedAdsChatInner() {
     messages,
     activeSessionId,
     metaCreds,
+    metaConnections.length,
     googleCreds,
     startCooldown,
     activeScopeKey,
@@ -1482,6 +1534,8 @@ function UnifiedAdsChatInner() {
             metaConnections={metaConnections}
             activeMetaAccountId={activeMetaAccountId}
             onSwitchMetaAccount={switchMetaAccount}
+            canAddMetaAccount={canAddMetaAccount}
+            addMetaBlockedReason={addMetaBlockedReason}
             googleCreds={googleCreds}
             onConnectMeta={connectMetaManual}
             onConnectGoogle={connectGoogle}

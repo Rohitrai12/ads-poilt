@@ -1275,6 +1275,7 @@ export async function POST(request: NextRequest) {
     messages: Array<{ role: string; content: string | Array<{ type: string; [key: string]: unknown }> }>;
     meta?: { accessToken: string; adAccountId: string; pageId?: string | null; pixelId?: string | null };
     google?: { accessToken: string; customerId: string };
+    metaConnectionsCount?: number;
   };
   const lastUserMessage = body.messages.slice().reverse().find((m) => m.role === "user");
   const lastUserText =
@@ -1328,6 +1329,20 @@ export async function POST(request: NextRequest) {
       {
         error: "Your plan allows only one connected platform at a time.",
         code: "PLATFORM_LIMIT_REACHED",
+        billing: plan.view,
+      },
+      { status: 402 }
+    );
+  }
+  if (
+    plan.limits.adAccountsLimit !== "unlimited" &&
+    typeof body.metaConnectionsCount === "number" &&
+    body.metaConnectionsCount > plan.limits.adAccountsLimit
+  ) {
+    return NextResponse.json(
+      {
+        error: "Your plan ad account limit has been reached.",
+        code: "AD_ACCOUNT_LIMIT_REACHED",
         billing: plan.view,
       },
       { status: 402 }

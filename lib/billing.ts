@@ -1,5 +1,6 @@
 import pool from "@/lib/mysql"
 import type { AuthUser } from "@/lib/auth"
+import { ensureSchema } from "@/lib/auth"
 import { getStripe } from "@/lib/stripe"
 
 export type BillingStatus = "trialing" | "active" | "past_due" | "canceled" | "unpaid" | "incomplete" | "free"
@@ -115,6 +116,7 @@ export function toIso(value: unknown): string | null {
 }
 
 export async function getBillingSnapshotByUserId(userId: number): Promise<BillingSnapshot> {
+  await ensureSchema()
   const [rows] = await pool.execute(
     `SELECT id, stripe_customer_id, stripe_subscription_id, stripe_price_id, subscription_status, trial_ends_at, current_period_end
             , plan_tier, usage_month, monthly_message_count, monthly_report_count
@@ -138,6 +140,21 @@ export async function getBillingSnapshotByUserId(userId: number): Promise<Billin
       current_period_end: Date | string | null
     }>
   )[0]
+  if (!row) {
+    return {
+      userId,
+      planTier: "free",
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      stripePriceId: null,
+      subscriptionStatus: "free",
+      usageMonth: currentMonth(),
+      monthlyMessageCount: 0,
+      monthlyReportCount: 0,
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+    }
+  }
   return {
     userId: row.id,
     planTier: ((row.plan_tier ?? "free") as PlanTier),
@@ -202,6 +219,7 @@ export async function getPlanContext(user: AuthUser) {
 }
 
 export async function consumeMessageQuota(userId: number, isReport: boolean) {
+  await ensureSchema()
   const month = currentMonth()
   await pool.execute(
     `UPDATE users
@@ -238,6 +256,7 @@ export async function updateSubscriptionFromStripe(args: {
   trialEndsAt: Date | null
   currentPeriodEnd: Date | null
 }) {
+  await ensureSchema()
   await pool.execute(
     `UPDATE users
      SET stripe_subscription_id = ?, stripe_price_id = ?, subscription_status = ?, plan_tier = ?, trial_ends_at = ?, current_period_end = ?
