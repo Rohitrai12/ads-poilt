@@ -122,8 +122,8 @@ const data = {
   ],
   navSecondary: [
     {
-      title: "Settings",
-      url: "#",
+      title: "Billing",
+      url: "/dashboard/billing",
       icon: IconSettings,
     },
     {

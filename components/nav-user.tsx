@@ -100,7 +100,7 @@ export function NavUser({
               </DropdownMenuItem>
               <DropdownMenuItem>
                 <IconCreditCard />
-                Billing
+                <a href="/dashboard/billing">Billing</a>
               </DropdownMenuItem>
               <DropdownMenuItem>
                 <IconNotification />

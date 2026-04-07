@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { verifyAuthToken } from "@/lib/auth"
+import { getBillingSnapshotByUserId, toBillingView } from "@/lib/billing"
 
 export const runtime = "nodejs"
 
@@ -18,5 +19,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ user: null }, { status: 401 })
   }
 
-  return NextResponse.json({ user }, { status: 200 })
+  const snapshot = await getBillingSnapshotByUserId(user.id)
+  return NextResponse.json({ user, billing: toBillingView(snapshot) }, { status: 200 })
 }

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { consumeMessageQuota, getPlanContext, isEditingTool, isReportPrompt } from "@/lib/billing";
+import { getAuthUserFromRequest } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -1264,11 +1266,49 @@ type ClaudeContentBlock =
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
-  const { messages, meta, google } = (await request.json()) as {
+  const user = getAuthUserFromRequest(request);
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const plan = await getPlanContext(user);
+  const body = (await request.json()) as {
     messages: Array<{ role: string; content: string | Array<{ type: string; [key: string]: unknown }> }>;
     meta?: { accessToken: string; adAccountId: string; pageId?: string | null; pixelId?: string | null };
     google?: { accessToken: string; customerId: string };
   };
+  const lastUserMessage = body.messages.slice().reverse().find((m) => m.role === "user");
+  const lastUserText =
+    typeof lastUserMessage?.content === "string"
+      ? lastUserMessage.content
+      : Array.isArray(lastUserMessage?.content)
+        ? String(
+            (lastUserMessage.content.find((b) => b.type === "text") as { text?: string } | undefined)?.text ?? ""
+          )
+        : "";
+  const reportPrompt = isReportPrompt(lastUserText);
+
+  if (plan.limits.monthlyAiMessages !== "unlimited" && plan.view.usage.monthlyMessageCount >= plan.limits.monthlyAiMessages) {
+    return NextResponse.json(
+      {
+        error: "Monthly AI message limit reached",
+        code: "MESSAGE_LIMIT_REACHED",
+        billing: plan.view,
+      },
+      { status: 429 }
+    );
+  }
+  if (reportPrompt && plan.limits.monthlyAiReports !== "unlimited" && plan.view.usage.monthlyReportCount >= plan.limits.monthlyAiReports) {
+    return NextResponse.json(
+      {
+        error: "Monthly AI report limit reached",
+        code: "REPORT_LIMIT_REACHED",
+        billing: plan.view,
+      },
+      { status: 429 }
+    );
+  }
+
+  const { messages, meta, google } = body;
 
   if (!process.env.ANTHROPIC_API_KEY)
     return NextResponse.json({ error: "ANTHROPIC_API_KEY not set" }, { status: 500 });
@@ -1276,8 +1316,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No platforms connected" }, { status: 400 });
 
   const creds: Credentials = { meta, google };
-  const availableTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
+  const allTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
+  const availableTools = plan.limits.allowCampaignEdits
+    ? allTools
+    : allTools.filter((t) => !isEditingTool(t.name));
   const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
+
+  const connectedCount = [meta ? 1 : 0, google ? 1 : 0].reduce((a, b) => a + b, 0);
+  if (connectedCount > plan.limits.allowedPlatforms) {
+    return NextResponse.json(
+      {
+        error: "Your plan allows only one connected platform at a time.",
+        code: "PLATFORM_LIMIT_REACHED",
+        billing: plan.view,
+      },
+      { status: 402 }
+    );
+  }
+
+  await consumeMessageQuota(user.id, reportPrompt);
 
   const systemWithContext =
     `${SYSTEM_PROMPT}\n\nCONNECTED PLATFORMS: ${connectedPlatforms}.\n` +
