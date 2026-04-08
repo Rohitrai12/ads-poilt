@@ -43,7 +43,7 @@ export function SignupForm({
         body: JSON.stringify({ email, password, name: name || undefined }),
       })
 
-      let data: { error?: string } = {}
+      let data: { error?: string; next?: string } = {}
       try {
         data = (await res.json()) as { error?: string }
       } catch {
@@ -55,7 +55,7 @@ export function SignupForm({
         return
       }
 
-      router.push("/dashboard")
+      router.push(data.next ?? "/?checkout=1#pricing")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.")
     } finally {

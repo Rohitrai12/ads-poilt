@@ -11,6 +11,8 @@ export default function Home() {
   const [annual, setAnnual] = useState(false)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [checkoutEmail, setCheckoutEmail] = useState("")
+  const [checkoutBusyPlan, setCheckoutBusyPlan] = useState<"" | "starter" | "growth" | "agency">("")
   const chartRef = useRef<SVGSVGElement>(null)
 
   useEffect(() => {
@@ -19,6 +21,35 @@ export default function Home() {
     script.async = true;
     document.body.appendChild(script);
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const email = params.get("email")
+    if (email) setCheckoutEmail(email)
+  }, [])
+
+  async function startPlanCheckout(plan: "starter" | "growth" | "agency") {
+    if (!checkoutEmail) {
+      window.location.href = "/sign-up"
+      return
+    }
+    setCheckoutBusyPlan(plan)
+    try {
+      const res = await fetch("/api/billing/public-checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan, email: checkoutEmail }),
+      })
+      const data = (await res.json().catch(() => ({}))) as { url?: string; error?: string }
+      if (!res.ok || !data.url) {
+        alert(data.error ?? "Unable to start checkout")
+        return
+      }
+      window.location.href = data.url
+    } finally {
+      setCheckoutBusyPlan("")
+    }
+  }
 
   /* ── nav scroll ── */
   useEffect(() => {
@@ -95,7 +126,7 @@ export default function Home() {
     ['Do I need any technical skills to use Zofi?', 'None at all. If you can send a text message, you can use Zofi. You connect your ad accounts with one click, and everything else is just a conversation. Zofi handles all the technical parts behind the scenes.'],
     ['Is my ad account data safe?', 'Yes. Zofi connects to your accounts using OAuth — the same secure method used by apps like Slack and Notion. We never store your passwords. Your data is encrypted and never shared with third parties. You can disconnect at any time.'],
     ['Can Zofi make changes to my campaigns without asking?', 'No. Zofi always asks for your confirmation before making any changes. She will tell you exactly what she plans to do and why. You approve it. She executes it. Every action is logged and reversible with one click.'],
-    ['What ad platforms does Zofi support?', 'Zofi currently supports Meta Ads (Facebook + Instagram), Google Ads (Search, Shopping, Display, YouTube), and TikTok Ads. Pinterest and Snapchat are coming in late 2026.'],
+    ['What ad platforms does Zofi support?', 'Zofi currently supports Meta Ads (Facebook + Instagram), Google Ads (Search, Shopping, Display, YouTube), and Ads. Pinterest and Snapchat are coming in late 2026.'],
     ['How is Zofi different from Meta Ads Manager or Google Ads?', 'Meta and Google only show you their own data in their own complicated dashboards. Zofi shows you all three platforms together, in plain English, with AI analysis that tells you exactly what to do. It\'s like having a senior media buyer who monitors everything 24/7.'],
     ['Do you offer a free trial?', 'Yes. Starter includes a 7-day free trial. Growth and Agency include a 14-day free trial.'],
   ]
@@ -147,7 +178,7 @@ export default function Home() {
               Than Any Human
             </h1>
             <p className="hero-sub">
-              Zofi connects to your Meta, Google, and TikTok ad accounts. She analyses every campaign, spots wasted budget, and fixes your ads — just by having a conversation with her.<br /><br />
+              Zofi connects to your Meta, Google, and ad accounts. She analyses every campaign, spots wasted budget, and fixes your ads — just by having a conversation with her.<br /><br />
               No expertise needed. No agency required. Just results.
             </p>
             <div className="hero-btns">
@@ -235,7 +266,7 @@ export default function Home() {
       {/* MARQUEE */}
       <div className="marquee-section">
         <div className="marquee-inner" id="marquee">
-          {Array(2).fill(['Meta Ads', 'Google Ads', 'TikTok Ads', 'Facebook Pixel', 'Google Analytics', 'Google Tag Manager', 'Shopify', 'WooCommerce', 'TikTok Pixel', 'Meta Business Suite']).flat().map((item, i) => (
+          {Array(2).fill(['Meta Ads', 'Google Ads', 'Ads', 'Facebook Pixel', 'Google Analytics', 'Google Tag Manager', 'Shopify', 'WooCommerce', 'Pixel', 'Meta Business Suite']).flat().map((item, i) => (
             <span key={i} className="marquee-item">{item} <span className="sep">•</span></span>
           ))}
         </div>
@@ -251,7 +282,7 @@ export default function Home() {
           </div>
           <div className="problem-grid">
             {[
-              { delay: 'reveal-delay-1', icon: '😤', title: "You're flying blind", body: "You're spending money on Meta, Google, and TikTok but have no idea which platform is actually working. The dashboards don't talk to each other." },
+              { delay: 'reveal-delay-1', icon: '😤', title: "You're flying blind", body: "You're spending money on Meta, Google, and but have no idea which platform is actually working. The dashboards don't talk to each other." },
               { delay: 'reveal-delay-2', icon: '💸', title: 'Budget is being wasted right now', body: 'While you sleep, underperforming campaigns keep spending. By the time you notice, hundreds or thousands of dollars are gone.' },
               { delay: 'reveal-delay-3', icon: '⏰', title: "There aren't enough hours", body: "Checking three ad platforms, reading confusing reports, making manual changes — it takes hours every week that you just don't have." },
             ].map(({ delay, icon, title, body }) => (
@@ -276,7 +307,7 @@ export default function Home() {
             <h2 className="section-headline">Zofi works with every<br />major ad platform</h2>
           </div>
           <div className="platform-tabs reveal">
-            {([['meta', '📘 Meta Ads'], ['google', '🔍 Google Ads'], ['tiktok', '🎵 TikTok Ads']] as [Tab, string][]).map(([id, label]) => (
+            {([['meta', '📘 Meta Ads'], ['google', '🔍 Google Ads'], ['tiktok', '🎵 Ads']] as [Tab, string][]).map(([id, label]) => (
               <button key={id} className={`ptab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>{label}</button>
             ))}
           </div>
@@ -315,15 +346,15 @@ export default function Home() {
             </div>
           </div>
 
-          {/* TikTok */}
+          {/* */}
           <div className={`platform-panel${tab === 'tiktok' ? ' active' : ''}`} id="tab-tiktok">
             <ul className="platform-features">
-              {['Connect TikTok Business accounts in one click', 'Video ad performance — views, watch time, swipe-ups', 'TikTok Pixel tracking — purchases, sign-ups, app installs', 'Creative fatigue alerts — know when to refresh your video', 'Video completion rate and engagement rate monitoring', 'Audience targeting — interests, behaviours, custom audiences', 'Budget management across campaigns and ad groups', 'Cross-platform attribution with Meta and Google'].map(f => (
+              {['Connect Business accounts in one click', 'Video ad performance — views, watch time, swipe-ups', 'Pixel tracking — purchases, sign-ups, app installs', 'Creative fatigue alerts — know when to refresh your video', 'Video completion rate and engagement rate monitoring', 'Audience targeting — interests, behaviours, custom audiences', 'Budget management across campaigns and ad groups', 'Cross-platform attribution with Meta and Google'].map(f => (
                 <li key={f} className="pf-item"><span className="pf-check">✓</span> {f}</li>
               ))}
             </ul>
             <div className="platform-mockup">
-              <div className="mock-header">TikTok Videos <span className="mock-status">● Live</span></div>
+              <div className="mock-header">Videos <span className="mock-status">● Live</span></div>
               <div className="mock-row head"><div>Creative</div><div>CPM</div><div>Completion</div><div>ROAS</div></div>
               <div className="mock-row"><div className="mock-name">Unboxing Video</div><div className="mock-val">$8.20</div><div className="mock-roas-bad">41% ⚠️</div><div className="mock-roas-bad">2.1x</div></div>
               <div className="mock-row"><div className="mock-name">Product Demo</div><div className="mock-val">$6.80</div><div className="mock-roas-good">68%</div><div className="mock-roas-good">4.4x</div></div>
@@ -379,7 +410,7 @@ export default function Home() {
           </div>
           <div className="kpi-unique reveal">
             {[
-              { icon: '🔀', title: 'Cross-Platform Attribution', body: 'Track customers who saw a TikTok ad, searched Google, then bought from a Meta retargeting ad. Know the full journey, not just the last click.' },
+              { icon: '🔀', title: 'Cross-Platform Attribution', body: 'Track customers who saw a ad, searched Google, then bought from a Meta retargeting ad. Know the full journey, not just the last click.' },
               { icon: '🎯', title: 'Budget Efficiency Score', body: 'A single score (0–100) showing what percentage of your ad spend is actually working. Below 70? Zofi automatically intervenes.' },
               { icon: '🔥', title: 'Creative Fatigue Index', body: 'Zofi monitors ad frequency and engagement drop-off to tell you exactly when to refresh your creative before ROAS tanks.' },
               { icon: '💰', title: 'True Profit ROAS', body: "Connect your product costs and Zofi calculates real profit ROAS — not just revenue ROAS. Know if you're actually making money." },
@@ -414,10 +445,10 @@ export default function Home() {
               <div className="cs-msg"><div className="cs-msg-avatar z">Z</div><div className="cs-bubble z">Hi! I&apos;ve finished analysing your accounts. You have 14 active campaigns across Meta, Google, and TikTok. Your overall ROAS is 4.2x — up from 3.4x last week. I found 3 issues that need attention. Want me to walk you through them?</div></div>
               <div className="cs-msg user"><div className="cs-msg-avatar u">U</div><div className="cs-bubble u">What happened to my ROAS this week?</div></div>
               <div className="cs-msg"><div className="cs-msg-avatar z">Z</div><div className="cs-bubble z">Your ROAS improved from 3.4x to 4.2x. The main driver: your Meta retargeting campaign picked up momentum after the audience change. However, your Google Shopping campaign started targeting broad match keywords on Monday — it tripled your clicks but dropped conversion rate from 4.2% to 1.1%. Want me to fix the Google targeting?<div className="cs-action">⚡ Estimated saving: $180/day if fixed now</div></div></div>
-              <div className="cs-msg user"><div className="cs-msg-avatar u">U</div><div className="cs-bubble u">Yes fix it. Also check if my TikTok creative is getting tired</div></div>
-              <div className="cs-msg"><div className="cs-msg-avatar z">Z</div><div className="cs-bubble z"><div className="cs-action">✓ Paused 14 broad match keywords in Google Shopping</div><div className="cs-action">✓ Restored exact match targeting — saving ~$180/day</div><br />For TikTok: your top video (product unboxing) has been running 23 days. Watch completion dropped from 68% to 41% — classic creative fatigue. Your other two TikTok videos are still fresh. I recommend uploading a new video this week.</div></div>
+              <div className="cs-msg user"><div className="cs-msg-avatar u">U</div><div className="cs-bubble u">Yes fix it. Also check if my creative is getting tired</div></div>
+              <div className="cs-msg"><div className="cs-msg-avatar z">Z</div><div className="cs-bubble z"><div className="cs-action">✓ Paused 14 broad match keywords in Google Shopping</div><div className="cs-action">✓ Restored exact match targeting — saving ~$180/day</div><br />For TikTok: your top video (product unboxing) has been running 23 days. Watch completion dropped from 68% to 41% — classic creative fatigue. Your other two videos are still fresh. I recommend uploading a new video this week.</div></div>
               <div className="cs-msg user"><div className="cs-msg-avatar u">U</div><div className="cs-bubble u">What&apos;s my best performing audience across all 3 platforms?</div></div>
-              <div className="cs-msg"><div className="cs-msg-avatar z">Z</div><div className="cs-bubble z">Across all platforms, your best audience is: Women 25–34, fashion &amp; online shopping interests, mobile devices. This segment generates 4x the ROAS of your average audience. I can create a 1% lookalike of this audience on Meta and TikTok right now. Want me to?</div></div>
+              <div className="cs-msg"><div className="cs-msg-avatar z">Z</div><div className="cs-bubble z">Across all platforms, your best audience is: Women 25–34, fashion &amp; online shopping interests, mobile devices. This segment generates 4x the ROAS of your average audience. I can create a 1% lookalike of this audience on Meta and right now. Want me to?</div></div>
               <div className="cs-msg user"><div className="cs-msg-avatar u">U</div><div className="cs-bubble u">Create it on Meta and increase their budget by $50/day</div></div>
               <div className="cs-msg"><div className="cs-msg-avatar z">Z</div><div className="cs-bubble z"><div className="cs-action">✓ Created lookalike audience (1%) on Meta — 1.2M reach</div><div className="cs-action">✓ Meta retargeting budget: $80 → $130/day</div><br />Both are live. I&apos;ll monitor performance and send you an update in 48 hours. Projected ROAS improvement: +0.6x based on similar audience tests.</div></div>
             </div>
@@ -456,7 +487,9 @@ export default function Home() {
               <div className="price-plan">Starter</div>
               <div className="price-num"><sup>$</sup>{prices[0]}<span>/mo</span></div>
               <div className="price-desc">For small businesses just getting started with Meta ads.</div>
-              <button className="price-btn price-btn-outline">Start 7-day free trial</button>
+              <button className="price-btn price-btn-outline" onClick={() => void startPlanCheckout("starter")} disabled={checkoutBusyPlan !== ""}>
+                {checkoutBusyPlan === "starter" ? "Redirecting..." : "Start 7-day free trial"}
+              </button>
               <ul className="price-features">
                 {['1 ad account', 'Meta Ads only', '100 AI messages/month', 'Campaign dashboard', 'Pause & budget changes', '2 AI reports/month'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
                 {['Google & TikTok Ads', 'Cross-platform analytics', 'Budget burn alerts', 'Email reports'].map(f => <li key={f} className="pf"><span className="pf-icon-no">✗</span> {f}</li>)}
@@ -468,7 +501,9 @@ export default function Home() {
               <div className="price-plan" style={{ color: 'var(--violet)' }}>Growth</div>
               <div className="price-num" style={{ color: 'var(--violet)' }}><sup>$</sup>{prices[1]}<span>/mo</span></div>
               <div className="price-desc">All 3 platforms. Unlimited AI. The complete package.</div>
-              <button className="price-btn price-btn-filled">Start 14-day free trial</button>
+              <button className="price-btn price-btn-filled" onClick={() => void startPlanCheckout("growth")} disabled={checkoutBusyPlan !== ""}>
+                {checkoutBusyPlan === "growth" ? "Redirecting..." : "Start 14-day free trial"}
+              </button>
               <ul className="price-features">
                 {['vs competitors at $99/mo', 'You save $240/year and get more platforms', '3 ad accounts', 'Meta + Google + TikTok', 'Unlimited AI messages', 'Cross-platform dashboard', 'Full campaign control', 'Weekly AI reports + email', 'Budget burn alerts 24/7', 'Pixel health monitoring', 'Audience & lookalike creator', 'White-label reports', 'Multi-client dashboard'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
               </ul>
@@ -478,7 +513,9 @@ export default function Home() {
               <div className="price-plan" style={{ color: 'rgba(255,255,255,0.4)' }}>Agency</div>
               <div className="price-num" style={{ color: 'white' }}><sup>$</sup>{prices[2]}<span style={{ color: 'rgba(255,255,255,0.4)' }} />/mo</div>
               <div className="price-desc" style={{ color: 'rgba(255,255,255,0.5)' }}>For agencies managing multiple client accounts.</div>
-              <button className="price-btn" style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>Start 14-day free trial</button>
+              <button className="price-btn" onClick={() => void startPlanCheckout("agency")} disabled={checkoutBusyPlan !== ""} style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>
+                {checkoutBusyPlan === "agency" ? "Redirecting..." : "Start 14-day free trial"}
+              </button>
               <ul className="price-features">
                 {['Unlimited ad accounts', 'Meta + Google + TikTok', 'Unlimited AI messages', 'Everything in Growth', 'Multi-client dashboard', 'White-label reports', 'Daily AI reports', 'Client performance emails', 'Priority Slack support', 'Onboarding call included'].map(f => <li key={f} className="pf" style={{ color: 'rgba(255,255,255,0.6)' }}><span className="pf-icon-ok">✓</span> {f}</li>)}
               </ul>
@@ -519,7 +556,7 @@ export default function Home() {
         <div style={{ position: 'relative', zIndex: 1 }}>
           <div className="section-label label-violet" style={{ margin: '0 auto 24px', display: 'inline-block' }}>✦ Free to start. No credit card.</div>
           <h2 className="section-headline" style={{ fontSize: '56px' }}>Stop guessing.<br />Start growing.</h2>
-          <p className="section-sub" style={{ maxWidth: '480px' }}>Join 2,400+ businesses who let Zofi handle their Meta, Google, and TikTok ads. Most customers see ROAS improvement in their first week.</p>
+          <p className="section-sub" style={{ maxWidth: '480px' }}>Join 2,400+ businesses who let Zofi handle their Meta, Google, and ads. Most customers see ROAS improvement in their first week.</p>
           <button className="btn-primary" style={{ margin: '4px auto 0', display: 'inline-flex', padding: '16px 36px', fontSize: '17px', borderRadius: '12px' }}>Chat With Zofi — It&apos;s Free →</button>
           <div className="trust-row">
             <div className="trust-item">🔒 Bank-level security</div>
@@ -534,11 +571,11 @@ export default function Home() {
         <div className="footer-grid">
           <div className="footer-brand">
             <div className="logo">Zofi</div>
-            <p>Your AI media buyer, always on. Managing Meta, Google &amp; TikTok ads so you don&apos;t have to.</p>
+            <p>Your AI media buyer, always on. Managing Meta, Google &amp; ads so you don&apos;t have to.</p>
           </div>
           {[
             { h: 'Product', links: ['Features', 'How It Works', 'Pricing', 'Changelog'] },
-            { h: 'Platforms', links: ['Meta Ads', 'Google Ads', 'TikTok Ads', 'Analytics'] },
+            { h: 'Platforms', links: ['Meta Ads', 'Google Ads', 'Ads', 'Analytics'] },
             { h: 'Company', links: ['About', 'Blog', 'Contact', 'Privacy Policy', 'Terms of Service'] },
           ].map(({ h, links }) => (
             <div key={h} className="footer-col">
@@ -952,10 +989,10 @@ export default function Home() {
         .chart-svg { width: 100%; height: 140px; }
         .chart-line-meta { fill: none; stroke: var(--violet); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 600; stroke-dashoffset: 600; transition: stroke-dashoffset 2s ease 0.5s; }
         .chart-line-google { fill: none; stroke: var(--mint); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 600; stroke-dashoffset: 600; transition: stroke-dashoffset 2s ease 0.8s; }
-        .chart-line-tiktok { fill: none; stroke: var(--coral); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 600; stroke-dashoffset: 600; transition: stroke-dashoffset 2s ease 1.1s; }
+        .chart-line-{ fill: none; stroke: var(--coral); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 600; stroke-dashoffset: 600; transition: stroke-dashoffset 2s ease 1.1s; }
         .chart-svg.animate .chart-line-meta,
         .chart-svg.animate .chart-line-google,
-        .chart-svg.animate .chart-line-tiktok { stroke-dashoffset: 0; }
+        .chart-svg.animate .chart-line-{ stroke-dashoffset: 0; }
 
         .kpi-unique { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
         .kpi-unique-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 24px; transition: all 0.25s; }

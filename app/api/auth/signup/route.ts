@@ -1,7 +1,7 @@
 // app/api/auth/signup/route.ts
 import { NextRequest, NextResponse } from "next/server"
 
-import { createUser, signAuthToken } from "@/lib/auth"
+import { createUser } from "@/lib/auth"
 
 export const runtime = "nodejs"
 
@@ -27,23 +27,13 @@ export async function POST(request: NextRequest) {
     }
 
     const user = await createUser(email.toLowerCase().trim(), password, name)
-
-    const token = signAuthToken(user)
-
-    const response = NextResponse.json(
-      { user: { email: user.email, name: user.name } },
+    return NextResponse.json(
+      {
+        user: { email: user.email, name: user.name },
+        next: `/?checkout=1&email=${encodeURIComponent(user.email)}#pricing`,
+      },
       { status: 201 }
     )
-
-    response.cookies.set("auth_token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-    })
-
-    return response
   } catch (error) {
     if (error instanceof Error && error.message === "USER_EXISTS") {
       return NextResponse.json(

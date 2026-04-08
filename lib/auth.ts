@@ -126,6 +126,40 @@ export async function authenticateUser(
   return { id: user.id, email: user.email, name: user.name }
 }
 
+export async function getUserByEmail(email: string): Promise<UserRecord | null> {
+  await ensureSchema()
+  const [rows] = await pool.execute(
+    `SELECT id, email, name, stripe_customer_id, stripe_subscription_id, stripe_price_id, subscription_status, trial_ends_at, current_period_end
+     FROM users WHERE email = ? LIMIT 1`,
+    [email]
+  )
+  const row = (
+    rows as Array<{
+      id: number
+      email: string
+      name?: string
+      stripe_customer_id: string | null
+      stripe_subscription_id: string | null
+      stripe_price_id: string | null
+      subscription_status: string | null
+      trial_ends_at: Date | string | null
+      current_period_end: Date | string | null
+    }>
+  )[0]
+  if (!row) return null
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    stripeCustomerId: row.stripe_customer_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    stripePriceId: row.stripe_price_id,
+    subscriptionStatus: row.subscription_status,
+    trialEndsAt: row.trial_ends_at ? new Date(row.trial_ends_at).toISOString() : null,
+    currentPeriodEnd: row.current_period_end ? new Date(row.current_period_end).toISOString() : null,
+  }
+}
+
 // ── JWT helpers ───────────────────────────────────────────────────────────────
 export function signAuthToken(user: AuthUser): string {
   return jwt.sign(

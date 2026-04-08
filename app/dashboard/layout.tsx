@@ -5,6 +5,7 @@ import { redirect } from "next/navigation"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { verifyAuthToken } from "@/lib/auth"
+import { getBillingSnapshotByUserId, toBillingView } from "@/lib/billing"
 
 export default async function DashboardLayout({
   children,
@@ -17,6 +18,11 @@ export default async function DashboardLayout({
 
   if (!user) {
     redirect("/login")
+  }
+
+  const billing = toBillingView(await getBillingSnapshotByUserId(user.id))
+  if (!billing.hasActiveSubscription) {
+    redirect(`/?checkout=1&email=${encodeURIComponent(user.email)}#pricing`)
   }
 
   return (
