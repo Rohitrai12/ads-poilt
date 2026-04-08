@@ -11,6 +11,13 @@ function fromUnix(seconds?: number | null) {
   return new Date(seconds * 1000)
 }
 
+function normalizeMetadataTier(tier: string | null): "free" | "starter" | "growth" | "agency" | null {
+  if (!tier) return null
+  if (tier === "pro") return "growth"
+  if (tier === "free" || tier === "starter" || tier === "growth" || tier === "agency") return tier
+  return null
+}
+
 export async function POST(request: NextRequest) {
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
   if (!webhookSecret) return NextResponse.json({ error: "Missing webhook secret" }, { status: 500 })
@@ -34,7 +41,7 @@ export async function POST(request: NextRequest) {
     if (subscriptionId && customerId) {
       const sub = await stripe.subscriptions.retrieve(subscriptionId)
       const priceId = sub.items.data[0]?.price?.id ?? null
-      const metadataTier = (sub.metadata?.plan_tier ?? session.metadata?.plan_tier ?? null) as "free" | "pro" | "agency" | null
+      const metadataTier = normalizeMetadataTier((sub.metadata?.plan_tier ?? session.metadata?.plan_tier ?? null) as string | null)
       await updateSubscriptionFromStripe({
         customerId,
         subscriptionId: sub.id,
@@ -52,7 +59,7 @@ export async function POST(request: NextRequest) {
   ) {
     const sub = event.data.object as Stripe.Subscription
     const priceId = sub.items.data[0]?.price?.id ?? null
-    const metadataTier = (sub.metadata?.plan_tier ?? null) as "free" | "pro" | "agency" | null
+    const metadataTier = normalizeMetadataTier((sub.metadata?.plan_tier ?? null) as string | null)
     await updateSubscriptionFromStripe({
       customerId: String(sub.customer),
       subscriptionId: sub.id,

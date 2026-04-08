@@ -15,15 +15,23 @@ export async function POST(request: NextRequest) {
     const user = getAuthUserFromRequest(request)
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-    const body = (await request.json().catch(() => ({}))) as { plan?: "pro" | "agency" }
-    const plan = body.plan ?? "pro"
-    const priceId = plan === "agency" ? process.env.STRIPE_PRICE_AGENCY : process.env.STRIPE_PRICE_PRO
+    const body = (await request.json().catch(() => ({}))) as { plan?: "starter" | "growth" | "agency" }
+    const plan = body.plan ?? "growth"
+    const priceId =
+      plan === "starter"
+        ? process.env.STRIPE_PRICE_STARTER
+        : plan === "agency"
+          ? process.env.STRIPE_PRICE_AGENCY
+          : (process.env.STRIPE_PRICE_GROWTH ?? process.env.STRIPE_PRICE_PRO)
     if (!priceId) return NextResponse.json({ error: "Stripe price id not configured" }, { status: 500 })
 
     const stripe = getStripe()
     const customerId = await ensureStripeCustomerForUser(user)
     const appUrl = getAppUrl(request)
-    const trialDays = Number(process.env.STRIPE_TRIAL_DAYS ?? 7)
+    const trialDays =
+      plan === "starter"
+        ? Number(process.env.STRIPE_TRIAL_DAYS_STARTER ?? 7)
+        : Number(process.env.STRIPE_TRIAL_DAYS_GROWTH_AGENCY ?? process.env.STRIPE_TRIAL_DAYS ?? 14)
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",

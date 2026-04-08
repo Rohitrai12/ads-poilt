@@ -89,7 +89,7 @@ export default function Home() {
     return () => io.disconnect()
   }, [])
 
-  const prices = annual ? ['0', '39', '119'] : ['0', '49', '149']
+  const prices = annual ? ['49', '79', '179'] : ['49', '79', '179']
 
   const faqs = [
     ['Do I need any technical skills to use Zofi?', 'None at all. If you can send a text message, you can use Zofi. You connect your ad accounts with one click, and everything else is just a conversation. Zofi handles all the technical parts behind the scenes.'],
@@ -97,7 +97,7 @@ export default function Home() {
     ['Can Zofi make changes to my campaigns without asking?', 'No. Zofi always asks for your confirmation before making any changes. She will tell you exactly what she plans to do and why. You approve it. She executes it. Every action is logged and reversible with one click.'],
     ['What ad platforms does Zofi support?', 'Zofi currently supports Meta Ads (Facebook + Instagram), Google Ads (Search, Shopping, Display, YouTube), and TikTok Ads. Pinterest and Snapchat are coming in late 2026.'],
     ['How is Zofi different from Meta Ads Manager or Google Ads?', 'Meta and Google only show you their own data in their own complicated dashboards. Zofi shows you all three platforms together, in plain English, with AI analysis that tells you exactly what to do. It\'s like having a senior media buyer who monitors everything 24/7.'],
-    ['Do you offer a free trial?', 'Yes — all paid plans include a 14-day free trial with full access to every feature. No credit card required to start. You only pay after the trial if you choose to continue.'],
+    ['Do you offer a free trial?', 'Yes. Starter includes a 7-day free trial. Growth and Agency include a 14-day free trial.'],
   ]
 
   return (
@@ -451,40 +451,40 @@ export default function Home() {
             <span className="toggle-label">Annual <span className="toggle-badge">Save 20%</span></span>
           </div>
           <div className="pricing-grid reveal">
-            {/* Free */}
+            {/* Starter */}
             <div className="pricing-card">
-              <div className="price-plan">Free</div>
+              <div className="price-plan">Starter</div>
               <div className="price-num"><sup>$</sup>{prices[0]}<span>/mo</span></div>
-              <div className="price-desc">Perfect to get started. No credit card required.</div>
-              <button className="price-btn price-btn-outline">Get Started Free</button>
+              <div className="price-desc">For small businesses just getting started with Meta ads.</div>
+              <button className="price-btn price-btn-outline">Start 7-day free trial</button>
               <ul className="price-features">
-                {['1 Ad Account', '1 Platform (Meta, Google, or TikTok)', '50 AI messages/month', 'Basic campaign overview', '1 AI report/month'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
-                {['Cross-platform dashboard', 'Campaign edits via AI'].map(f => <li key={f} className="pf"><span className="pf-icon-no">✗</span> {f}</li>)}
+                {['1 ad account', 'Meta Ads only', '100 AI messages/month', 'Campaign dashboard', 'Pause & budget changes', '2 AI reports/month'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
+                {['Google & TikTok Ads', 'Cross-platform analytics', 'Budget burn alerts', 'Email reports'].map(f => <li key={f} className="pf"><span className="pf-icon-no">✗</span> {f}</li>)}
               </ul>
             </div>
-            {/* Pro */}
+            {/* Growth */}
             <div className="pricing-card featured">
               <div className="popular-badge">✦ Most Popular</div>
-              <div className="price-plan" style={{ color: 'var(--violet)' }}>Pro</div>
+              <div className="price-plan" style={{ color: 'var(--violet)' }}>Growth</div>
               <div className="price-num" style={{ color: 'var(--violet)' }}><sup>$</sup>{prices[1]}<span>/mo</span></div>
-              <div className="price-desc">Everything you need to grow. Most customers 5x their ROAS.</div>
-              <button className="price-btn price-btn-filled">Start Pro — 14 Days Free</button>
+              <div className="price-desc">All 3 platforms. Unlimited AI. The complete package.</div>
+              <button className="price-btn price-btn-filled">Start 14-day free trial</button>
               <ul className="price-features">
-                {['5 Ad Accounts', 'All 3 platforms: Meta + Google + TikTok', 'Unlimited AI messages', 'Cross-platform dashboard', 'Weekly AI performance reports', 'Full campaign control', 'PDF export + email reports'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
+                {['vs competitors at $99/mo', 'You save $240/year and get more platforms', '3 ad accounts', 'Meta + Google + TikTok', 'Unlimited AI messages', 'Cross-platform dashboard', 'Full campaign control', 'Weekly AI reports + email', 'Budget burn alerts 24/7', 'Pixel health monitoring', 'Audience & lookalike creator', 'White-label reports', 'Multi-client dashboard'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
               </ul>
             </div>
             {/* Agency */}
             <div className="pricing-card" style={{ background: 'var(--navy)' }}>
               <div className="price-plan" style={{ color: 'rgba(255,255,255,0.4)' }}>Agency</div>
               <div className="price-num" style={{ color: 'white' }}><sup>$</sup>{prices[2]}<span style={{ color: 'rgba(255,255,255,0.4)' }} />/mo</div>
-              <div className="price-desc" style={{ color: 'rgba(255,255,255,0.5)' }}>Manage every client from one place. White-label reports included.</div>
-              <button className="price-btn" style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>Start Agency Free</button>
+              <div className="price-desc" style={{ color: 'rgba(255,255,255,0.5)' }}>For agencies managing multiple client accounts.</div>
+              <button className="price-btn" style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>Start 14-day free trial</button>
               <ul className="price-features">
-                {['Unlimited Ad Accounts', 'All 3 platforms', 'Unlimited AI messages', 'White-label branded reports', 'Multi-client dashboard', 'Dedicated onboarding call', 'Slack support channel'].map(f => <li key={f} className="pf" style={{ color: 'rgba(255,255,255,0.6)' }}><span className="pf-icon-ok">✓</span> {f}</li>)}
+                {['Unlimited ad accounts', 'Meta + Google + TikTok', 'Unlimited AI messages', 'Everything in Growth', 'Multi-client dashboard', 'White-label reports', 'Daily AI reports', 'Client performance emails', 'Priority Slack support', 'Onboarding call included'].map(f => <li key={f} className="pf" style={{ color: 'rgba(255,255,255,0.6)' }}><span className="pf-icon-ok">✓</span> {f}</li>)}
               </ul>
             </div>
           </div>
-          <p style={{ textAlign: 'center', marginTop: '24px', fontSize: '14px', color: 'var(--gray400)' }}>All plans include a 14-day free trial. No credit card required. Cancel anytime.</p>
+          <p style={{ textAlign: 'center', marginTop: '24px', fontSize: '14px', color: 'var(--gray400)' }}>Starter includes a 7-day free trial. Growth and Agency include a 14-day free trial.</p>
         </div>
       </section>
 

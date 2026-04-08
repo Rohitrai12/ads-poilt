@@ -1324,6 +1324,16 @@ export async function POST(request: NextRequest) {
   const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
 
   const connectedCount = [meta ? 1 : 0, google ? 1 : 0].reduce((a, b) => a + b, 0);
+  if (google && !plan.limits.allowGoogleAds) {
+    return NextResponse.json(
+      {
+        error: "Your current plan supports Meta Ads only. Upgrade to Growth or Agency to use Google Ads.",
+        code: "GOOGLE_NOT_ALLOWED_FOR_PLAN",
+        billing: plan.view,
+      },
+      { status: 402 }
+    );
+  }
   if (connectedCount > plan.limits.allowedPlatforms) {
     return NextResponse.json(
       {

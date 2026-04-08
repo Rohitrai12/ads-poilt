@@ -89,7 +89,7 @@ type MetaPending = {
 } | null;
 
 type BillingSummary = {
-  planTier: "free" | "pro" | "agency";
+  planTier: "free" | "starter" | "growth" | "agency";
   limits: {
     adAccountsLimit: number | "unlimited";
   };

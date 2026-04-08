@@ -4,13 +4,14 @@ import { useEffect, useState } from "react"
 
 type Billing = {
   status: string
-  planTier: "free" | "pro" | "agency"
+  planTier: "free" | "starter" | "growth" | "agency"
   trialEndsAt: string | null
   currentPeriodEnd: string | null
   hasActiveSubscription: boolean
   limits: {
     adAccountsLimit: number | "unlimited"
     allowedPlatforms: number
+    allowGoogleAds: boolean
     monthlyAiMessages: number | "unlimited"
     monthlyAiReports: number | "unlimited"
     allowCrossPlatformDashboard: boolean
@@ -44,7 +45,7 @@ export default function BillingPage() {
     void refresh()
   }, [])
 
-  async function startCheckout(plan: "pro" | "agency") {
+  async function startCheckout(plan: "starter" | "growth" | "agency") {
     setLoading(true)
     setError("")
     try {
@@ -103,11 +104,14 @@ export default function BillingPage() {
         <div>Campaign edits via AI: {billing?.limits.allowCampaignEdits ? "Yes" : "No"}</div>
       </div>
       <div className="flex gap-2">
-        <button disabled={loading} onClick={() => startCheckout("pro")} className="rounded-md bg-black text-white px-3 py-2 text-sm disabled:opacity-50">
-          Start Pro ($9/month)
+        <button disabled={loading} onClick={() => startCheckout("starter")} className="rounded-md bg-black text-white px-3 py-2 text-sm disabled:opacity-50">
+          Start Starter ($49/month, 7-day trial)
+        </button>
+        <button disabled={loading} onClick={() => startCheckout("growth")} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50">
+          Start Growth ($79/month, 14-day trial)
         </button>
         <button disabled={loading} onClick={() => startCheckout("agency")} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50">
-          Start Agency ($20/month)
+          Start Agency ($179/month, 14-day trial)
         </button>
         <button disabled={loading} onClick={openPortal} className="rounded-md border px-3 py-2 text-sm disabled:opacity-50">
           Open billing portal

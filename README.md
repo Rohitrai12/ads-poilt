@@ -37,28 +37,27 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## Stripe Billing Setup
 
-This project now includes Stripe subscription billing with a free trial.
+This project now includes Stripe subscription billing with plan-specific free trials.
 
 ### Plans configured
 
-- `free` (default): 7-day trial window, then free tier limits
-- `pro`: $9/month
-- `agency`: $20/month
+- `starter`: $49/month (7-day free trial)
+- `growth`: $79/month (14-day free trial)
+- `agency`: $179/month (14-day free trial)
 
 ### Enforced limits
 
-- **Free**
+- **Starter**
   - 1 ad account
-  - 1 platform
-  - 50 AI messages/month
-  - 1 AI report/month
-  - no cross-platform dashboard
-  - no campaign edits via AI
-- **Pro**
-  - 5 ad accounts
-  - 3 platforms
-  - unlimited AI messages/reports
+  - Meta Ads only
+  - 100 AI messages/month
+  - 2 AI reports/month
   - campaign edits enabled
+- **Growth**
+  - 3 ad accounts
+  - Meta + Google + TikTok
+  - unlimited AI messages/reports
+  - cross-platform dashboard + white-label + multi-client enabled
 - **Agency**
   - unlimited ad accounts
   - 3 platforms
@@ -72,9 +71,11 @@ Add these to `.env.local`:
 ```bash
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_PRO=price_...
+STRIPE_PRICE_STARTER=price_...
+STRIPE_PRICE_GROWTH=price_...
 STRIPE_PRICE_AGENCY=price_...
-STRIPE_TRIAL_DAYS=14
+STRIPE_TRIAL_DAYS_STARTER=7
+STRIPE_TRIAL_DAYS_GROWTH_AGENCY=14
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 

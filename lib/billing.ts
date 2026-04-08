@@ -19,11 +19,12 @@ export type BillingSnapshot = {
   currentPeriodEnd: string | null
 }
 
-export type PlanTier = "free" | "pro" | "agency"
+export type PlanTier = "free" | "starter" | "growth" | "agency"
 
 export type PlanLimits = {
   adAccountsLimit: number | "unlimited"
   allowedPlatforms: number
+  allowGoogleAds: boolean
   monthlyAiMessages: number | "unlimited"
   monthlyAiReports: number | "unlimited"
   allowCrossPlatformDashboard: boolean
@@ -55,6 +56,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
   free: {
     adAccountsLimit: 1,
     allowedPlatforms: 1,
+    allowGoogleAds: false,
     monthlyAiMessages: 50,
     monthlyAiReports: 1,
     allowCrossPlatformDashboard: false,
@@ -64,21 +66,36 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     dedicatedOnboarding: false,
     slackSupport: false,
   },
-  pro: {
-    adAccountsLimit: 5,
-    allowedPlatforms: 3,
-    monthlyAiMessages: "unlimited",
-    monthlyAiReports: "unlimited",
-    allowCrossPlatformDashboard: true,
+  starter: {
+    adAccountsLimit: 1,
+    allowedPlatforms: 1,
+    allowGoogleAds: false,
+    monthlyAiMessages: 100,
+    monthlyAiReports: 2,
+    allowCrossPlatformDashboard: false,
     allowCampaignEdits: true,
     allowWhiteLabelReports: false,
     allowMultiClientDashboard: false,
     dedicatedOnboarding: false,
     slackSupport: false,
   },
+  growth: {
+    adAccountsLimit: 3,
+    allowedPlatforms: 3,
+    allowGoogleAds: true,
+    monthlyAiMessages: "unlimited",
+    monthlyAiReports: "unlimited",
+    allowCrossPlatformDashboard: true,
+    allowCampaignEdits: true,
+    allowWhiteLabelReports: true,
+    allowMultiClientDashboard: true,
+    dedicatedOnboarding: false,
+    slackSupport: false,
+  },
   agency: {
     adAccountsLimit: "unlimited",
     allowedPlatforms: 3,
+    allowGoogleAds: true,
     monthlyAiMessages: "unlimited",
     monthlyAiReports: "unlimited",
     allowCrossPlatformDashboard: true,
@@ -100,7 +117,14 @@ function currentMonth() {
 export function detectPlanFromPriceId(priceId: string | null): PlanTier {
   if (!priceId) return "free"
   if (priceId === process.env.STRIPE_PRICE_AGENCY) return "agency"
-  if (priceId === process.env.STRIPE_PRICE_PRO) return "pro"
+  if (priceId === process.env.STRIPE_PRICE_GROWTH || priceId === process.env.STRIPE_PRICE_PRO) return "growth"
+  if (priceId === process.env.STRIPE_PRICE_STARTER) return "starter"
+  return "free"
+}
+
+function normalizePlanTier(raw: string | null | undefined): PlanTier {
+  if (raw === "starter" || raw === "growth" || raw === "agency" || raw === "free") return raw
+  if (raw === "pro") return "growth"
   return "free"
 }
 
@@ -157,7 +181,7 @@ export async function getBillingSnapshotByUserId(userId: number): Promise<Billin
   }
   return {
     userId: row.id,
-    planTier: ((row.plan_tier ?? "free") as PlanTier),
+    planTier: normalizePlanTier(row.plan_tier),
     stripeCustomerId: row.stripe_customer_id,
     stripeSubscriptionId: row.stripe_subscription_id,
     stripePriceId: row.stripe_price_id,
