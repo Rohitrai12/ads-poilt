@@ -10,26 +10,43 @@ function getAppUrl(request: NextRequest) {
   return process.env.NEXT_PUBLIC_APP_URL ?? new URL(request.url).origin
 }
 
+function isLikelyRealPriceId(value: string | undefined) {
+  return typeof value === "string" && /^price_[A-Za-z0-9]+$/.test(value) && value.length > 12
+}
+
 async function resolvePriceId(plan: "starter" | "growth" | "agency") {
+  const stripe = getStripe()
+
   const direct =
     plan === "starter"
       ? process.env.STRIPE_PRICE_STARTER
       : plan === "agency"
         ? process.env.STRIPE_PRICE_AGENCY
         : (process.env.STRIPE_PRICE_GROWTH ?? process.env.STRIPE_PRICE_PRO)
-  if (direct) return direct
+  if (isLikelyRealPriceId(direct)) return direct as string
 
-  const productId =
+  const configuredProductId =
     plan === "starter"
-      ? process.env.STRIPE_PRODUCT_STARTER
+      ? (process.env.STRIPE_PRODUCT_STARTER ?? process.env.STRIPE_PRODUCT_STARTER_ID)
       : plan === "agency"
-        ? process.env.STRIPE_PRODUCT_AGENCY
-        : process.env.STRIPE_PRODUCT_GROWTH
-  if (!productId) return null
+        ? (process.env.STRIPE_PRODUCT_AGENCY ?? process.env.STRIPE_PRODUCT_AGENCY_ID)
+        : (process.env.STRIPE_PRODUCT_GROWTH ?? process.env.STRIPE_PRODUCT_GROWTH_ID)
 
-  const stripe = getStripe()
-  const prices = await stripe.prices.list({ product: productId, active: true, limit: 1 })
-  return prices.data[0]?.id ?? null
+  if (configuredProductId) {
+    const prices = await stripe.prices.list({ product: configuredProductId, active: true, limit: 10 })
+    const recurringMonthly = prices.data.find((p) => p.type === "recurring" && p.recurring?.interval === "month")
+    if (recurringMonthly?.id) return recurringMonthly.id
+    if (prices.data[0]?.id) return prices.data[0].id
+  }
+
+  const expectedName = plan === "starter" ? "Starter" : plan === "growth" ? "Growth" : "Agency"
+  const products = await stripe.products.list({ active: true, limit: 100 })
+  const productByName = products.data.find((p) => p.name?.toLowerCase() === expectedName.toLowerCase())
+  if (productByName?.default_price && typeof productByName.default_price === "string") {
+    return productByName.default_price
+  }
+
+  return null
 }
 
 export async function POST(request: NextRequest) {
