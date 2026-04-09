@@ -841,11 +841,33 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       const p = new URLSearchParams({
         name: n, objective, status: "PAUSED",
         special_ad_categories: JSON.stringify([special_ad_category]),
-        is_adset_budget_sharing_enabled: use_cbo === true ? "false" : "true",
         access_token: tok,
       });
-      if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
-      return metaPost(`${META_BASE}/${acct}/campaigns`, p);
+      // Keep budget-sharing disabled to avoid Meta conflicts across campaign configurations.
+      p.set("is_adset_budget_sharing_enabled", "false");
+      if (use_cbo === true && daily_budget_cents) {
+        p.set("daily_budget", String(Math.round(daily_budget_cents)));
+      }
+      // For non-CBO flows, omit campaign-level budget and let ad sets own budgets.
+      const firstTry = (await metaPost(`${META_BASE}/${acct}/campaigns`, p)) as Record<string, unknown>;
+      if (firstTry?.id) return firstTry;
+      const err = firstTry?.error as Record<string, unknown> | undefined;
+      const subcode = String(err?.error_subcode ?? "");
+      if (subcode === "4834002" || subcode === "4834005") {
+        const retry = new URLSearchParams({
+          name: n,
+          objective,
+          status: "PAUSED",
+          special_ad_categories: JSON.stringify([special_ad_category]),
+          access_token: tok,
+        });
+        if (use_cbo === true && daily_budget_cents) {
+          retry.set("daily_budget", String(Math.round(daily_budget_cents)));
+        }
+        const secondTry = await metaPost(`${META_BASE}/${acct}/campaigns`, retry);
+        return secondTry;
+      }
+      return firstTry;
     }
 
     if (name === "meta_update_campaign_budget") {
