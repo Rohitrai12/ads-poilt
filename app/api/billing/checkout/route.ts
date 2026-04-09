@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { ensureStripeCustomerForUser } from "@/lib/billing"
+import { getUserByEmail } from "@/lib/auth"          // ← was missing
 import { getAuthUserFromRequest } from "@/lib/session"
 import { getStripe } from "@/lib/stripe"
 
@@ -16,7 +17,6 @@ function isLikelyRealPriceId(value: string | undefined) {
 
 async function resolvePriceId(plan: "starter" | "growth" | "agency") {
   const stripe = getStripe()
-
   const direct =
     plan === "starter"
       ? process.env.STRIPE_PRICE_STARTER
@@ -51,13 +51,33 @@ async function resolvePriceId(plan: "starter" | "growth" | "agency") {
 
 export async function POST(request: NextRequest) {
   try {
-    const user = getAuthUserFromRequest(request)
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-    const body = (await request.json().catch(() => ({}))) as { plan?: "starter" | "growth" | "agency" }
+    const body = (await request.json().catch(() => ({}))) as {
+      plan?: "starter" | "growth" | "agency"
+      email?: string
+    }
     const plan = body.plan ?? "growth"
+
+    let user = getAuthUserFromRequest(request)
+
+    if (!user && body.email) {
+      const found = await getUserByEmail(body.email.toLowerCase().trim())
+      if (!found) {
+        return NextResponse.json(
+          { error: "Account not found. Please sign up first." },
+          { status: 404 }
+        )
+      }
+      user = found
+    }
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
     const priceId = await resolvePriceId(plan)
-    if (!priceId) return NextResponse.json({ error: "Stripe price id not configured" }, { status: 500 })
+    if (!priceId) {
+      return NextResponse.json({ error: "Stripe price id not configured" }, { status: 500 })
+    }
 
     const stripe = getStripe()
     const customerId = await ensureStripeCustomerForUser(user)
@@ -71,22 +91,26 @@ export async function POST(request: NextRequest) {
       mode: "subscription",
       customer: customerId,
       line_items: [{ price: priceId, quantity: 1 }],
-      metadata: { plan_tier: plan },
-      success_url: `${appUrl}/dashboard/billing?checkout=success`,
-      cancel_url: `${appUrl}/dashboard/billing?checkout=cancelled`,
+      metadata: { plan_tier: plan, app_user_email: user.email },
+      success_url: body.email
+        ? `${appUrl}/login?paid=1`
+        : `${appUrl}/dashboard/billing?checkout=success`,
+      cancel_url: body.email
+        ? `${appUrl}/?checkout=1&email=${encodeURIComponent(user.email)}#pricing`
+        : `${appUrl}/dashboard/billing?checkout=cancelled`,
       subscription_data: {
         trial_period_days: trialDays,
-        metadata: { plan_tier: plan },
+        metadata: { plan_tier: plan, app_user_email: user.email },
       },
       allow_promotion_codes: true,
     })
 
     return NextResponse.json({ url: session.url }, { status: 200 })
   } catch (err) {
+    console.error("[checkout] error:", err)
     return NextResponse.json(
       { error: "Failed to create checkout session", details: String(err) },
       { status: 500 }
     )
   }
 }
-

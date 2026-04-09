@@ -11,44 +11,83 @@ export default function Home() {
   const [annual, setAnnual] = useState(false)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const [checkoutEmail, setCheckoutEmail] = useState("")
   const [checkoutBusyPlan, setCheckoutBusyPlan] = useState<"" | "starter" | "growth" | "agency">("")
+  const [checkoutError, setCheckoutError] = useState("")
+
+  // Email modal state
+  const [pendingPlan, setPendingPlan] = useState<"starter" | "growth" | "agency" | null>(null)
+  const [emailInput, setEmailInput] = useState("")
+  const [emailError, setEmailError] = useState("")
+
   const chartRef = useRef<SVGSVGElement>(null)
 
   useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://api.leadconnectorhq.com/js/form_embed.js";
-    script.async = true;
-    document.body.appendChild(script);
-  }, []);
+    const script = document.createElement("script")
+    script.src = "https://api.leadconnectorhq.com/js/form_embed.js"
+    script.async = true
+    document.body.appendChild(script)
+  }, [])
 
+  // Pre-fill email if returning from a cancelled checkout (?email=...)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const email = params.get("email")
-    if (email) setCheckoutEmail(email)
+    if (email) setEmailInput(email)
   }, [])
 
-  async function startPlanCheckout(plan: "starter" | "growth" | "agency") {
-    if (!checkoutEmail) {
-      window.location.href = "/sign-up"
-      return
-    }
+  // Step 1: user clicks plan → open modal (or redirect to signup if no account yet)
+  function handlePlanClick(plan: "starter" | "growth" | "agency") {
+    setCheckoutError("")
+    setEmailError("")
+    setPendingPlan(plan)
+  }
+
+  // Step 2: user submits email in modal → hit checkout API
+  async function startPlanCheckout(plan: "starter" | "growth" | "agency", email: string) {
     setCheckoutBusyPlan(plan)
+    setEmailError("")
     try {
-      const res = await fetch("/api/billing/public-checkout", {
+      const res = await fetch("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, email: checkoutEmail }),
+        body: JSON.stringify({ plan, email }),
       })
-      const data = (await res.json().catch(() => ({}))) as { url?: string; error?: string }
+      const data = (await res.json().catch(() => ({}))) as {
+        url?: string
+        error?: string
+        details?: string
+      }
       if (!res.ok || !data.url) {
-        alert(data.error ?? "Unable to start checkout")
+        if (res.status === 404) {
+          setEmailError(data.error ?? "Account not found. Please sign up first.")
+        } else {
+          setCheckoutError(
+            data.details
+              ? `${data.error ?? "Checkout failed"}: ${data.details}`
+              : (data.error ?? "Checkout failed")
+          )
+          setPendingPlan(null)
+        }
         return
       }
       window.location.href = data.url
+    } catch {
+      setCheckoutError("Network error. Please try again.")
+      setPendingPlan(null)
     } finally {
       setCheckoutBusyPlan("")
     }
+  }
+
+  function handleEmailSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!pendingPlan) return
+    const trimmed = emailInput.trim()
+    if (!trimmed || !trimmed.includes("@")) {
+      setEmailError("Please enter a valid email address.")
+      return
+    }
+    void startPlanCheckout(pendingPlan, trimmed)
   }
 
   /* ── nav scroll ── */
@@ -61,6 +100,7 @@ export default function Home() {
   /* ── close mobile menu on scroll ── */
   useEffect(() => {
     if (mobileMenuOpen) setMobileMenuOpen(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrolled])
 
   /* ── reveal on scroll ── */
@@ -120,14 +160,16 @@ export default function Home() {
     return () => io.disconnect()
   }, [])
 
-  const prices = annual ? ['49', '79', '179'] : ['49', '79', '179']
+  const prices = annual
+    ? [Math.round(49 * 0.8), Math.round(79 * 0.8), Math.round(179 * 0.8)]
+    : [49, 79, 179]
 
   const faqs = [
     ['Do I need any technical skills to use Zofi?', 'None at all. If you can send a text message, you can use Zofi. You connect your ad accounts with one click, and everything else is just a conversation. Zofi handles all the technical parts behind the scenes.'],
     ['Is my ad account data safe?', 'Yes. Zofi connects to your accounts using OAuth — the same secure method used by apps like Slack and Notion. We never store your passwords. Your data is encrypted and never shared with third parties. You can disconnect at any time.'],
     ['Can Zofi make changes to my campaigns without asking?', 'No. Zofi always asks for your confirmation before making any changes. She will tell you exactly what she plans to do and why. You approve it. She executes it. Every action is logged and reversible with one click.'],
-    ['What ad platforms does Zofi support?', 'Zofi currently supports Meta Ads (Facebook + Instagram), Google Ads (Search, Shopping, Display, YouTube), and Ads. Pinterest and Snapchat are coming in late 2026.'],
-    ['How is Zofi different from Meta Ads Manager or Google Ads?', 'Meta and Google only show you their own data in their own complicated dashboards. Zofi shows you all three platforms together, in plain English, with AI analysis that tells you exactly what to do. It\'s like having a senior media buyer who monitors everything 24/7.'],
+    ['What ad platforms does Zofi support?', 'Zofi currently supports Meta Ads (Facebook + Instagram), Google Ads (Search, Shopping, Display, YouTube), and TikTok Ads. Pinterest and Snapchat are coming in late 2026.'],
+    ['How is Zofi different from Meta Ads Manager or Google Ads?', "Meta and Google only show you their own data in their own complicated dashboards. Zofi shows you all three platforms together, in plain English, with AI analysis that tells you exactly what to do. It's like having a senior media buyer who monitors everything 24/7."],
     ['Do you offer a free trial?', 'Yes. Starter includes a 7-day free trial. Growth and Agency include a 14-day free trial.'],
   ]
 
@@ -487,7 +529,7 @@ export default function Home() {
               <div className="price-plan">Starter</div>
               <div className="price-num"><sup>$</sup>{prices[0]}<span>/mo</span></div>
               <div className="price-desc">For small businesses just getting started with Meta ads.</div>
-              <button className="price-btn price-btn-outline" onClick={() => void startPlanCheckout("starter")} disabled={checkoutBusyPlan !== ""}>
+              <button className="price-btn price-btn-outline"           onClick={() => handlePlanClick("starter")} disabled={checkoutBusyPlan !== ""}>
                 {checkoutBusyPlan === "starter" ? "Redirecting..." : "Start 7-day free trial"}
               </button>
               <ul className="price-features">
@@ -501,7 +543,7 @@ export default function Home() {
               <div className="price-plan" style={{ color: 'var(--violet)' }}>Growth</div>
               <div className="price-num" style={{ color: 'var(--violet)' }}><sup>$</sup>{prices[1]}<span>/mo</span></div>
               <div className="price-desc">All 3 platforms. Unlimited AI. The complete package.</div>
-              <button className="price-btn price-btn-filled" onClick={() => void startPlanCheckout("growth")} disabled={checkoutBusyPlan !== ""}>
+              <button className="price-btn price-btn-filled"           onClick={() => handlePlanClick("growth")} disabled={checkoutBusyPlan !== ""}>
                 {checkoutBusyPlan === "growth" ? "Redirecting..." : "Start 14-day free trial"}
               </button>
               <ul className="price-features">
@@ -513,7 +555,7 @@ export default function Home() {
               <div className="price-plan" style={{ color: 'rgba(255,255,255,0.4)' }}>Agency</div>
               <div className="price-num" style={{ color: 'white' }}><sup>$</sup>{prices[2]}<span style={{ color: 'rgba(255,255,255,0.4)' }} />/mo</div>
               <div className="price-desc" style={{ color: 'rgba(255,255,255,0.5)' }}>For agencies managing multiple client accounts.</div>
-              <button className="price-btn" onClick={() => void startPlanCheckout("agency")} disabled={checkoutBusyPlan !== ""} style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>
+              <button className="price-btn"           onClick={() => handlePlanClick("agency")} disabled={checkoutBusyPlan !== ""} style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>
                 {checkoutBusyPlan === "agency" ? "Redirecting..." : "Start 14-day free trial"}
               </button>
               <ul className="price-features">
