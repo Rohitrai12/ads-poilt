@@ -708,7 +708,45 @@ type Credentials = {
   google?: { accessToken: string; customerId: string };
 };
 
+const META_READ_MIN_INTERVAL_MS = 500;
+const META_READ_MAX_INTERVAL_MS = 1000;
+const META_WRITE_MIN_INTERVAL_MS = 5000;
+const META_WRITE_MAX_INTERVAL_MS = 10000;
+const META_BULK_STEP_MIN_DELAY_MS = 3000;
+const META_BULK_STEP_MAX_DELAY_MS = 8000;
+
+let metaReadNextAt = 0;
+let metaWriteNextAt = 0;
+
+function randBetween(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function throttleMeta(kind: "read" | "write") {
+  const now = Date.now();
+  const nextAt = kind === "write" ? metaWriteNextAt : metaReadNextAt;
+  if (nextAt > now) await sleep(nextAt - now);
+  const interval =
+    kind === "write"
+      ? randBetween(META_WRITE_MIN_INTERVAL_MS, META_WRITE_MAX_INTERVAL_MS)
+      : randBetween(META_READ_MIN_INTERVAL_MS, META_READ_MAX_INTERVAL_MS);
+  const scheduled = Date.now() + interval;
+  if (kind === "write") metaWriteNextAt = scheduled;
+  else metaReadNextAt = scheduled;
+}
+
+async function metaGet(url: string): Promise<unknown> {
+  await throttleMeta("read");
+  const res = await fetch(url);
+  return safeParseJSON(await res.text());
+}
+
 async function metaPost(url: string, params: URLSearchParams): Promise<unknown> {
+  await throttleMeta("write");
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -718,6 +756,7 @@ async function metaPost(url: string, params: URLSearchParams): Promise<unknown> 
 }
 
 async function metaPostForm(url: string, fields: Record<string, string>): Promise<unknown> {
+  await throttleMeta("write");
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   const res = await fetch(url, { method: "POST", body: form });
@@ -725,6 +764,7 @@ async function metaPostForm(url: string, fields: Record<string, string>): Promis
 }
 
 async function metaPostJSON(url: string, body: unknown, tok: string): Promise<unknown> {
+  await throttleMeta("write");
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` },
@@ -782,8 +822,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     const acct = `act_${adAccountId}`;
 
     if (name === "meta_list_campaigns") {
-      const res = await fetch(`${META_BASE}/${acct}/campaigns?fields=id,name,status,objective,daily_budget,lifetime_budget&access_token=${tok}`);
-      return safeParseJSON(await res.text());
+      return metaGet(`${META_BASE}/${acct}/campaigns?fields=id,name,status,objective,daily_budget,lifetime_budget&access_token=${tok}`);
     }
 
     if (name === "meta_get_campaign_insights") {
@@ -792,7 +831,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       let url = `${META_BASE}/${acct}/insights?fields=${fields}&level=campaign&date_preset=${date_preset}&access_token=${tok}`;
       if (campaign_ids?.length)
         url += `&filtering=${encodeURIComponent(JSON.stringify([{ field: "campaign.id", operator: "IN", value: campaign_ids }]))}`;
-      return safeParseJSON(await (await fetch(url)).text());
+      return metaGet(url);
     }
 
     if (name === "meta_create_campaign") {
@@ -821,19 +860,18 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_bulk_update_campaign_status") {
       const { campaign_ids, status } = input as { campaign_ids: string[]; status: string };
-      const results = await Promise.all(
-        campaign_ids.map(async (id) => {
-          const data = await metaPost(`${META_BASE}/${String(id)}`, new URLSearchParams({ status, access_token: tok }));
-          return { campaign_id: id, ...(data as object) };
-        })
-      );
+      const results: Array<Record<string, unknown>> = [];
+      for (const id of campaign_ids) {
+        const data = await metaPost(`${META_BASE}/${String(id)}`, new URLSearchParams({ status, access_token: tok }));
+        results.push({ campaign_id: id, ...(data as object) });
+        await sleep(randBetween(META_BULK_STEP_MIN_DELAY_MS, META_BULK_STEP_MAX_DELAY_MS));
+      }
       return { results, succeeded: results.filter((r) => (r as Record<string, unknown>).success).length, total: campaign_ids.length };
     }
 
     if (name === "meta_list_adsets") {
       const { campaign_id } = input as { campaign_id: string };
-      const res = await fetch(`${META_BASE}/${String(campaign_id)}/adsets?fields=id,name,status,daily_budget,targeting,optimization_goal&access_token=${tok}`);
-      return safeParseJSON(await res.text());
+      return metaGet(`${META_BASE}/${String(campaign_id)}/adsets?fields=id,name,status,daily_budget,targeting,optimization_goal&access_token=${tok}`);
     }
 
     if (name === "meta_create_adset") {
@@ -909,8 +947,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_search_interests") {
       const { query, limit = 10 } = input as { query: string; limit?: number };
-      const res = await fetch(`${META_BASE}/search?type=adinterest&q=${encodeURIComponent(query)}&limit=${Math.min(Number(limit), 25)}&access_token=${tok}`);
-      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const data = (await metaGet(`${META_BASE}/search?type=adinterest&q=${encodeURIComponent(query)}&limit=${Math.min(Number(limit), 25)}&access_token=${tok}`)) as Record<string, unknown>;
       const items = (data?.data as Array<Record<string, unknown>> ?? []).map((i) => ({
         id: String(i.id), name: String(i.name),
         audience_size_lower_bound: i.audience_size_lower_bound,
@@ -928,7 +965,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     if (name === "meta_list_ads") {
       const { adset_id } = input as { adset_id: string };
       const fields = "id,name,status,creative{id,name,title,body,image_url,thumbnail_url}";
-      return safeParseJSON(await (await fetch(`${META_BASE}/${String(adset_id)}/ads?fields=${fields}&access_token=${tok}`)).text());
+      return metaGet(`${META_BASE}/${String(adset_id)}/ads?fields=${fields}&access_token=${tok}`);
     }
 
     if (name === "meta_get_ad_insights") {
@@ -942,7 +979,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       } else {
         url = `${META_BASE}/${acct}/insights?fields=${fields}&level=ad&date_preset=${date_preset}&access_token=${tok}`;
       }
-      return safeParseJSON(await (await fetch(url)).text());
+      return metaGet(url);
     }
 
     if (name === "meta_update_ad_status") {
@@ -969,6 +1006,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
       form.append("access_token", tok);
       form.append("filename", new Blob([new Uint8Array(bytes)], { type: mimeType }), fname);
       try {
+        await throttleMeta("write");
         const res = await fetch(`${META_BASE}/${acct}/adimages`, { method: "POST", body: form });
         const result = safeParseJSON(await res.text()) as Record<string, unknown>;
         if (result.images) {
@@ -1011,7 +1049,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         access_token: tok,
       })) as Record<string, unknown>;
       if (adRes.id) {
-        const verified = safeParseJSON(await (await fetch(`${META_BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`)).text()) as Record<string, unknown>;
+        const verified = (await metaGet(`${META_BASE}/${String(adRes.id)}?fields=id,name,status,adset_id,campaign_id&access_token=${tok}`)) as Record<string, unknown>;
         return {
           success: true, ad_id: adRes.id, status: "PAUSED",
           ad_type: hasImage ? "image" : "text_link", page_id_used: page_id,
@@ -1022,20 +1060,17 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     }
 
     if (name === "meta_list_custom_audiences") {
-      const res = await fetch(`${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count&access_token=${tok}`);
-      return safeParseJSON(await res.text());
+      return metaGet(`${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count&access_token=${tok}`);
     }
 
     if (name === "meta_get_user_profile") {
       const { fields = ["id", "name", "email"] } = input as { fields?: string[] };
-      const res = await fetch(`${META_BASE}/me?fields=${(fields as string[]).join(",")}&access_token=${tok}`);
-      return safeParseJSON(await res.text());
+      return metaGet(`${META_BASE}/me?fields=${(fields as string[]).join(",")}&access_token=${tok}`);
     }
 
     if (name === "meta_list_businesses") {
       const { fields = ["id", "name", "profile_picture_uri", "link"] } = input as { fields?: string[] };
-      const res = await fetch(`${META_BASE}/me/businesses?fields=${(fields as string[]).join(",")}&access_token=${tok}`);
-      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const data = (await metaGet(`${META_BASE}/me/businesses?fields=${(fields as string[]).join(",")}&access_token=${tok}`)) as Record<string, unknown>;
       const businesses = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { businesses, count: businesses.length };
     }
@@ -1043,11 +1078,11 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     if (name === "meta_list_business_ad_accounts") {
       const { business_id, include_client_accounts = true } = input as { business_id: string; include_client_accounts?: boolean };
       const fields = "id,name,currency,account_status,business";
-      const ownedRes = safeParseJSON(await (await fetch(`${META_BASE}/${String(business_id)}/owned_ad_accounts?fields=${fields}&access_token=${tok}`)).text()) as Record<string, unknown>;
+      const ownedRes = (await metaGet(`${META_BASE}/${String(business_id)}/owned_ad_accounts?fields=${fields}&access_token=${tok}`)) as Record<string, unknown>;
       const owned = (ownedRes?.data as Array<Record<string, unknown>>) ?? [];
       let client: Array<Record<string, unknown>> = [];
       if (include_client_accounts) {
-        const clientRes = safeParseJSON(await (await fetch(`${META_BASE}/${String(business_id)}/client_ad_accounts?fields=${fields}&access_token=${tok}`)).text()) as Record<string, unknown>;
+        const clientRes = (await metaGet(`${META_BASE}/${String(business_id)}/client_ad_accounts?fields=${fields}&access_token=${tok}`)) as Record<string, unknown>;
         client = (clientRes?.data as Array<Record<string, unknown>>) ?? [];
       }
       return { owned_ad_accounts: owned, client_ad_accounts: client, total: owned.length + client.length };
@@ -1055,32 +1090,28 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_list_business_pages") {
       const { business_id } = input as { business_id: string };
-      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pages?fields=id,name,category,fan_count,verification_status,link&access_token=${tok}`);
-      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const data = (await metaGet(`${META_BASE}/${String(business_id)}/owned_pages?fields=id,name,category,fan_count,verification_status,link&access_token=${tok}`)) as Record<string, unknown>;
       const pages = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { pages, count: pages.length };
     }
 
     if (name === "meta_list_business_pixels") {
       const { business_id } = input as { business_id: string };
-      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_pixels?fields=id,name,creation_time,last_fired_time,is_created_by_business&access_token=${tok}`);
-      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const data = (await metaGet(`${META_BASE}/${String(business_id)}/owned_pixels?fields=id,name,creation_time,last_fired_time,is_created_by_business&access_token=${tok}`)) as Record<string, unknown>;
       const pixels = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { pixels, count: pixels.length };
     }
 
     if (name === "meta_get_business_user") {
       const { business_id } = input as { business_id: string };
-      const res = await fetch(`${META_BASE}/${String(business_id)}/business_users?fields=id,name,email,role,title,business&access_token=${tok}`);
-      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const data = (await metaGet(`${META_BASE}/${String(business_id)}/business_users?fields=id,name,email,role,title,business&access_token=${tok}`)) as Record<string, unknown>;
       const users = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { business_users: users, count: users.length };
     }
 
     if (name === "meta_list_catalogs") {
       const { business_id } = input as { business_id: string };
-      const res = await fetch(`${META_BASE}/${String(business_id)}/owned_product_catalogs?fields=id,name,business,product_count,da_display_settings,destination_catalog_settings,catalog_store&access_token=${tok}`);
-      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const data = (await metaGet(`${META_BASE}/${String(business_id)}/owned_product_catalogs?fields=id,name,business,product_count,da_display_settings,destination_catalog_settings,catalog_store&access_token=${tok}`)) as Record<string, unknown>;
       const catalogs = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { catalogs, count: catalogs.length };
     }
@@ -1094,14 +1125,12 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_get_catalog") {
       const { catalog_id } = input as { catalog_id: string };
-      const res = await fetch(`${META_BASE}/${String(catalog_id)}?fields=id,name,business,product_count,da_display_settings,vertical&access_token=${tok}`);
-      return safeParseJSON(await res.text());
+      return metaGet(`${META_BASE}/${String(catalog_id)}?fields=id,name,business,product_count,da_display_settings,vertical&access_token=${tok}`);
     }
 
     if (name === "meta_list_catalog_product_sets") {
       const { catalog_id, limit = 25 } = input as { catalog_id: string; limit?: number };
-      const res = await fetch(`${META_BASE}/${String(catalog_id)}/product_sets?fields=id,name,product_count,filter,retailer_id&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`);
-      const data = safeParseJSON(await res.text()) as Record<string, unknown>;
+      const data = (await metaGet(`${META_BASE}/${String(catalog_id)}/product_sets?fields=id,name,product_count,filter,retailer_id&limit=${Math.min(Number(limit), 100)}&access_token=${tok}`)) as Record<string, unknown>;
       const productSets = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { product_sets: productSets, count: productSets.length };
     }
@@ -1118,7 +1147,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         const filterArr = Object.entries(filter_equal).map(([key, value]) => ({ field: key, operator: "EQUAL", value }));
         url += `&filter=${encodeURIComponent(JSON.stringify(filterArr))}`;
       }
-      const data = safeParseJSON(await (await fetch(url)).text()) as Record<string, unknown>;
+      const data = (await metaGet(url)) as Record<string, unknown>;
       const products = (data?.data as Array<Record<string, unknown>>) ?? [];
       return { products, count: products.length };
     }
@@ -1130,8 +1159,8 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
 
     if (name === "meta_get_catalog_diagnostics") {
       const { catalog_id } = input as { catalog_id: string };
-      const catalogData = safeParseJSON(await (await fetch(`${META_BASE}/${String(catalog_id)}?fields=id,name,product_count,da_display_settings,product_issues&access_token=${tok}`)).text()) as Record<string, unknown>;
-      const errorProducts = safeParseJSON(await (await fetch(`${META_BASE}/${String(catalog_id)}/products?filter=${encodeURIComponent(JSON.stringify([{ field: "availability", operator: "EQUAL", value: "out of stock" }]))}&fields=id,name,retailer_id,availability&limit=10&access_token=${tok}`)).text()) as Record<string, unknown>;
+      const catalogData = (await metaGet(`${META_BASE}/${String(catalog_id)}?fields=id,name,product_count,da_display_settings,product_issues&access_token=${tok}`)) as Record<string, unknown>;
+      const errorProducts = (await metaGet(`${META_BASE}/${String(catalog_id)}/products?filter=${encodeURIComponent(JSON.stringify([{ field: "availability", operator: "EQUAL", value: "out of stock" }]))}&fields=id,name,retailer_id,availability&limit=10&access_token=${tok}`)) as Record<string, unknown>;
       return { catalog: catalogData, sample_out_of_stock_products: (errorProducts as Record<string, unknown>)?.data ?? [] };
     }
   }
