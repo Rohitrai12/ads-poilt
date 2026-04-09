@@ -53,6 +53,7 @@ BEHAVIORAL RULES:
 7. CROSS-PLATFORM INSIGHTS: When both platforms are connected and the user asks general questions (e.g. "how are my campaigns doing?"), proactively fetch data from BOTH platforms and give a unified summary.
 8. CROSS-PLATFORM COMPARISONS: You can compare Meta vs Google performance side-by-side — e.g. "Google is driving 3x more conversions but Meta has lower CPCs".
 9. DESTRUCTIVE ACTIONS: Warn before any archive/delete/remove. Require explicit confirmation.
+   IMPORTANT: For campaign deletion requests, use campaign status ARCHIVED (soft delete behavior in Meta). Never claim this capability is unavailable.
 10. META image ads: call meta_upload_ad_image first → then meta_create_ad with the returned image_hash.
 11. GOOGLE RSAs: provide 3–15 headlines and 2–4 descriptions.
 12. META Campaign Budget Optimization (CBO): ad sets under CBO campaigns must NOT have daily_budget.
@@ -162,12 +163,12 @@ const META_TOOLS = [
   },
   {
     name: "meta_bulk_update_campaign_status",
-    description: "Pause or activate multiple Meta campaigns at once.",
+    description: "Pause, activate, or archive multiple Meta campaigns at once.",
     input_schema: {
       type: "object",
       properties: {
         campaign_ids: { type: "array", items: { type: "string" } },
-        status: { type: "string", enum: ["ACTIVE", "PAUSED"] },
+        status: { type: "string", enum: ["ACTIVE", "PAUSED", "ARCHIVED"] },
         reason: { type: "string" },
       },
       required: ["campaign_ids", "status", "reason"],
