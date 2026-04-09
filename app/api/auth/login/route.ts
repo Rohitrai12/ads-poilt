@@ -2,7 +2,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { authenticateUser, signAuthToken } from "@/lib/auth"
-import { getBillingSnapshotByUserId, toBillingView } from "@/lib/billing"
 
 export const runtime = "nodejs"
 
@@ -26,19 +25,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "Invalid email or password" },
         { status: 401 }
-      )
-    }
-
-    const snapshot = await getBillingSnapshotByUserId(user.id)
-    const billing = toBillingView(snapshot)
-    if (!billing.hasActiveSubscription) {
-      return NextResponse.json(
-        {
-          error: "Payment required before login. Please choose a plan and complete checkout.",
-          code: "PAYMENT_REQUIRED",
-          next: `/?checkout=1&email=${encodeURIComponent(user.email)}#pricing`,
-        },
-        { status: 402 }
       )
     }
 
