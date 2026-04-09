@@ -43,13 +43,9 @@ export function LoginForm({
         body: JSON.stringify({ email, password }),
       })
 
-      const data = (await res.json()) as { error?: string; next?: string }
+      const data = (await res.json()) as { error?: string }
 
       if (!res.ok) {
-        if (res.status === 402 && data.next) {
-          router.push(data.next)
-          return
-        }
         setError(data.error ?? "Failed to login")
         return
       }
