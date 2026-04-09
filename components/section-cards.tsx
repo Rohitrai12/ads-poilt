@@ -129,7 +129,6 @@ const MOCK_LEAD_DATA = {
   platforms: [
     { name: "Meta", cpl: 0, closeRate: 0, costPerClosed: 0, leads: 0, color: "#6C47FF" },
     { name: "Google", cpl: 0, closeRate: 0, costPerClosed: 0, leads: 0, color: "#00C9A7" },
-    { name: "TikTok", cpl: 0, closeRate: 0, costPerClosed: 0, leads: 0, color: "#FF6B6B" },
   ] as PlatformLeadData[],
   daily: [
     { date: "Mar 5", total: 0, qualified: 0, closed: 0 },
@@ -143,15 +142,14 @@ const MOCK_LEAD_DATA = {
   campaigns: [
     { id: "1", name: "Meta — Women 28–40 Lahore", status: "ACTIVE", spend: 0, leads: 0, cpl: 0, closeRate: 0, mqlRate: 0, health: "healthy" },
     { id: "2", name: "Google Search — High Intent", status: "ACTIVE", spend: 0, leads: 0, cpl: 0, closeRate: 0, mqlRate: 0, health: "healthy" },
-    { id: "3", name: "TikTok — Broad 18–35", status: "ACTIVE", spend: 0, leads: 0, cpl: 0, closeRate: 0, mqlRate: 0, health: "critical" },
     { id: "4", name: "Meta — Retargeting Cart", status: "ACTIVE", spend: 0, leads: 0, cpl: 0, closeRate: 0, mqlRate: 0, health: "healthy" },
     { id: "5", name: "Google Display — Awareness", status: "PAUSED", spend: 0, leads: 0, cpl: 0, closeRate: 0, mqlRate: 0, health: "warning" },
     { id: "6", name: "Meta — Men 35–55 Karachi", status: "ACTIVE", spend: 0, leads: 0, cpl: 0, closeRate: 0, mqlRate: 0, health: "warning" },
   ] as LeadCampaign[],
   insights: [
     { type: "critical", title: "Form abandonment at 58% — critical", body: "58% of people who start your form don't finish it. Try reducing to 3 fields max. estimated fix: +40 leads/week." },
-    { type: "warning", title: "TikTok generating junk leads", body: "TikTok CPL $18 looks great but close rate is 6%. Real cost per closed = $300 vs $91 on Meta." },
-    { type: "good", title: "Google is your best channel", body: "Despite highest CPL ($88), Google closes at 31% — 5× better than TikTok. Recommended 25% budget shift." },
+    { type: "warning", title: "Meta broad audience quality dropped", body: "Meta broad CPL can look cheap, but close rate can be weak without tight audience filters. Use intent signals and exclusions." },
+    { type: "good", title: "Google is your best channel", body: "Despite higher CPL ($88), Google closes at 31% and drives the strongest deal quality. Recommended 25% budget shift." },
     { type: "tip", title: "Women 28–40 convert 3× better", body: "Your highest quality leads are Women 28–40 in Lahore. Narrowing targeting could improve CPQL by 35%." },
   ] as LeadInsight[],
 };
@@ -358,7 +356,6 @@ function RoasChart({ daily }: { daily: DailyPoint[] }) {
           <line key={t} x1={0} y1={y(max*t)} x2={W} y2={y(max*t)} stroke="currentColor" strokeOpacity="0.06" strokeWidth="1"/>
         ))}
         {daily.some(d=>d.google_roas>0)&&<polyline fill="none" stroke="#00C9A7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" points={pts("google_roas")}/>}
-        {daily.some(d=>d.tiktok_roas>0)&&<polyline fill="none" stroke="#FF6B6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" points={pts("tiktok_roas")}/>}
         <polyline fill="none" stroke="#6C47FF" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" points={pts("meta_roas")}/>
         {daily.map((d,i)=>(
           <circle key={i} cx={x(i)} cy={y(d.meta_roas)} r="3" fill="#6C47FF"/>
@@ -376,7 +373,6 @@ function SpendSplit({ data, currency }: { data: PlatformSpend; currency: string 
   const platforms = [
     { name:"Meta",   spend:data.meta,   color:"#6C47FF", pct:Math.round((data.meta/total)*100) },
     { name:"Google", spend:data.google, color:"#00C9A7", pct:Math.round((data.google/total)*100) },
-    { name:"TikTok", spend:data.tiktok, color:"#FF6B6B", pct:Math.round((data.tiktok/total)*100) },
   ];
   return (
     <div className="flex flex-col gap-3">
@@ -545,7 +541,7 @@ function LeadGenTab() {
           <StatCard label="Cost Per Appt." value={`$${ld.cpAppt}`} trend={pct(ld.cpAppt,ld.prevCpAppt)} trendLabel={`↓ $${(ld.prevCpAppt-ld.cpAppt)} better`} sub="Target $150" invertTrend/>
           <StatCard label="Cost Per Closed Deal" value={`$${ld.cpDeal}`} trend={pct(ld.cpDeal,ld.prevCpDeal)} trendLabel={`↓ $${(ld.prevCpDeal-ld.cpDeal)} better`} sub="Revenue $4,500" invertTrend/>
           <StatCard label="Revenue Per Lead" value={`$${ld.revenuePerLead}`} trend={pct(ld.revenuePerLead,ld.prevRevPerLead)} trendLabel={`+$${ld.revenuePerLead-ld.prevRevPerLead} best ever`} sub="Best ever"/>
-          <StatCard label="Total Spend" value={`$${(ld.totalSpend/1000).toFixed(1)}K`} trendLabel={`ROI ${ld.roi}x`} sub="3 platforms"/>
+          <StatCard label="Total Spend" value={`$${(ld.totalSpend/1000).toFixed(1)}K`} trendLabel={`ROI ${ld.roi}x`} sub="2 platforms"/>
         </div>
       </section>
 
@@ -604,7 +600,7 @@ function LeadGenTab() {
               ))}
               <div className="mt-2 rounded-lg border border-violet-500/20 bg-violet-500/5 px-4 py-3">
                 <p className="text-xs font-semibold text-violet-600 dark:text-violet-400">Zofi Insight</p>
-                <p className="mt-1 text-xs text-muted-foreground">Google leads close 5× better than TikTok. True cost per closed: Google $145 vs TikTok $300.</p>
+                <p className="mt-1 text-xs text-muted-foreground">Google leads close stronger than Meta broad campaigns. Shift budget toward high-intent search segments.</p>
               </div>
             </CardContent>
             <CardFooter className="flex-col items-start gap-1.5 text-sm">
@@ -635,7 +631,7 @@ function LeadGenTab() {
               {ld.platforms.map(p=><CplPlatformBar key={p.name} platform={p}/>)}
             </CardContent>
             <CardFooter className="flex-col items-start gap-1.5 text-sm">
-              <div className="font-medium">221 leads across 3 platforms this month</div>
+              <div className="font-medium">221 leads across 2 platforms this month</div>
               <div className="text-muted-foreground">True CPL weighted by lead volume</div>
             </CardFooter>
           </Card>
@@ -831,7 +827,7 @@ function EcommerceTab({ data, loading }: { data: DashData|null; loading: boolean
               <CardDescription>7-day cross-platform comparison</CardDescription>
               <CardAction>
                 <div className="flex gap-3 text-[11px]">
-                  {[["#6C47FF","Meta"],["#00C9A7","Google"],["#FF6B6B","TikTok"]].map(([col,name])=>(
+                  {[["#6C47FF","Meta"],["#00C9A7","Google"]].map(([col,name])=>(
                     <span key={name} className="flex items-center gap-1.5 text-muted-foreground">
                       <span className="inline-block h-2 w-2 rounded-full" style={{background:col}}/>
                       {name}
@@ -845,14 +841,14 @@ function EcommerceTab({ data, loading }: { data: DashData|null; loading: boolean
             </CardContent>
             <CardFooter className="flex-col items-start gap-1.5 text-sm">
               <div className="font-medium">Meta · {data?.daily.length??0} days tracked this period</div>
-              <div className="text-muted-foreground">Google &amp; TikTok integration adds cross-platform lines</div>
+              <div className="text-muted-foreground">Google integration adds cross-platform comparison lines</div>
             </CardFooter>
           </Card>
 
           <Card className="@container/card">
             <CardHeader>
               <CardTitle>Spend by Platform</CardTitle>
-              <CardDescription>{c?fmtM(c.spend+data!.platformSpend.google+data!.platformSpend.tiktok,curr)+" total this month":""}</CardDescription>
+              <CardDescription>{c?fmtM(c.spend+data!.platformSpend.google,curr)+" total this month":""}</CardDescription>
             </CardHeader>
             <CardContent>
               {loading?<div className="space-y-3"><Skeleton h={12}/><Skeleton h={36}/><Skeleton h={14}/><Skeleton h={14}/><Skeleton h={14}/></div>
@@ -860,7 +856,7 @@ function EcommerceTab({ data, loading }: { data: DashData|null; loading: boolean
                 :<div className="text-sm text-muted-foreground">No data</div>}
             </CardContent>
             <CardFooter className="flex-col items-start gap-1.5 text-sm">
-              <div className="font-medium">Google &amp; TikTok spend syncs when connected</div>
+              <div className="font-medium">Google spend syncs when connected</div>
               <div className="text-muted-foreground">Based on this month's spend</div>
             </CardFooter>
           </Card>
