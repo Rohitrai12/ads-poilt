@@ -13,11 +13,7 @@ export default function Home() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [checkoutBusyPlan, setCheckoutBusyPlan] = useState<"" | "starter" | "growth" | "agency">("")
   const [checkoutError, setCheckoutError] = useState("")
-
-  // Email modal state
-  const [pendingPlan, setPendingPlan] = useState<"starter" | "growth" | "agency" | null>(null)
   const [emailInput, setEmailInput] = useState("")
-  const [emailError, setEmailError] = useState("")
 
   const chartRef = useRef<SVGSVGElement>(null)
 
@@ -35,19 +31,26 @@ export default function Home() {
     if (email) setEmailInput(email)
   }, [])
 
-  // Step 1: user clicks plan → open modal (or redirect to signup if no account yet)
+  // Step 1: user clicks a plan -> collect account email
   function handlePlanClick(plan: "starter" | "growth" | "agency") {
     setCheckoutError("")
-    setEmailError("")
-    setPendingPlan(plan)
+    const existing = emailInput.trim()
+    if (existing) {
+      void startPlanCheckout(plan, existing)
+      return
+    }
+    const asked = window.prompt("Enter your signup email to continue checkout:")
+    const email = asked?.trim() ?? ""
+    if (!email) return
+    setEmailInput(email)
+    void startPlanCheckout(plan, email)
   }
 
-  // Step 2: user submits email in modal → hit checkout API
+  // Step 2: hit checkout API
   async function startPlanCheckout(plan: "starter" | "growth" | "agency", email: string) {
     setCheckoutBusyPlan(plan)
-    setEmailError("")
     try {
-      const res = await fetch("/api/billing/checkout", {
+      const res = await fetch("/api/billing/public-checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ plan, email }),
@@ -58,36 +61,22 @@ export default function Home() {
         details?: string
       }
       if (!res.ok || !data.url) {
+        const message = data.details
+          ? `${data.error ?? "Checkout failed"}: ${data.details}`
+          : (data.error ?? "Checkout failed")
+        setCheckoutError(message)
         if (res.status === 404) {
-          setEmailError(data.error ?? "Account not found. Please sign up first.")
-        } else {
-          setCheckoutError(
-            data.details
-              ? `${data.error ?? "Checkout failed"}: ${data.details}`
-              : (data.error ?? "Checkout failed")
-          )
-          setPendingPlan(null)
+          window.location.href = `/sign-up?email=${encodeURIComponent(email)}`
+          return
         }
         return
       }
       window.location.href = data.url
     } catch {
       setCheckoutError("Network error. Please try again.")
-      setPendingPlan(null)
     } finally {
       setCheckoutBusyPlan("")
     }
-  }
-
-  function handleEmailSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!pendingPlan) return
-    const trimmed = emailInput.trim()
-    if (!trimmed || !trimmed.includes("@")) {
-      setEmailError("Please enter a valid email address.")
-      return
-    }
-    void startPlanCheckout(pendingPlan, trimmed)
   }
 
   /* ── nav scroll ── */
@@ -564,6 +553,11 @@ export default function Home() {
             </div>
           </div>
           <p style={{ textAlign: 'center', marginTop: '24px', fontSize: '14px', color: 'var(--gray400)' }}>Starter includes a 7-day free trial. Growth and Agency include a 14-day free trial.</p>
+          {checkoutError && (
+            <p style={{ textAlign: "center", marginTop: "12px", fontSize: "13px", color: "#dc2626" }}>
+              {checkoutError}
+            </p>
+          )}
         </div>
       </section>
 
