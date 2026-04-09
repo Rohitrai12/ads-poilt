@@ -34,14 +34,18 @@ async function resolvePriceId(plan: "starter" | "growth" | "agency") {
 
   if (configuredProductId) {
     const prices = await stripe.prices.list({ product: configuredProductId, active: true, limit: 10 })
-    const recurringMonthly = prices.data.find((p) => p.type === "recurring" && p.recurring?.interval === "month")
+    const recurringMonthly = prices.data.find(
+      (p) => p.type === "recurring" && p.recurring?.interval === "month"
+    )
     if (recurringMonthly?.id) return recurringMonthly.id
     if (prices.data[0]?.id) return prices.data[0].id
   }
 
   const expectedName = plan === "starter" ? "Starter" : plan === "growth" ? "Growth" : "Agency"
   const products = await stripe.products.list({ active: true, limit: 100 })
-  const productByName = products.data.find((p) => p.name?.toLowerCase() === expectedName.toLowerCase())
+  const productByName = products.data.find(
+    (p) => p.name?.toLowerCase() === expectedName.toLowerCase()
+  )
   if (productByName?.default_price && typeof productByName.default_price === "string") {
     return productByName.default_price
   }
@@ -50,45 +54,107 @@ async function resolvePriceId(plan: "starter" | "growth" | "agency") {
 }
 
 export async function POST(request: NextRequest) {
+  // Step 1: parse body
+  const body = (await request.json().catch(() => ({}))) as {
+    plan?: "starter" | "growth" | "agency"
+    email?: string
+  }
+  const plan = body.plan
+  const email = body.email?.toLowerCase().trim()
+
+  if (!plan || !email) {
+    return NextResponse.json({ error: "Plan and email are required" }, { status: 400 })
+  }
+
+  // Step 2: verify env
+  if (!process.env.STRIPE_SECRET_KEY) {
+    console.error("[public-checkout] STRIPE_SECRET_KEY is not set")
+    return NextResponse.json({ error: "Stripe is not configured on this server" }, { status: 500 })
+  }
+
+  // Step 3: look up user
+  let user
   try {
-    const body = (await request.json().catch(() => ({}))) as {
-      plan?: "starter" | "growth" | "agency"
-      email?: string
+    user = await getUserByEmail(email)
+  } catch (err) {
+    console.error("[public-checkout] getUserByEmail threw:", err)
+    return NextResponse.json(
+      { error: "Database error. Please try again.", details: String(err) },
+      { status: 500 }
+    )
+  }
+
+  if (!user) {
+    return NextResponse.json(
+      { error: "Account not found. Please sign up first." },
+      { status: 404 }
+    )
+  }
+
+  // Step 4: resolve price ID
+  let priceId: string | null
+  try {
+    priceId = await resolvePriceId(plan)
+  } catch (err) {
+    console.error("[public-checkout] resolvePriceId threw:", err)
+    return NextResponse.json(
+      { error: "Failed to resolve Stripe price", details: String(err) },
+      { status: 500 }
+    )
+  }
+
+  if (!priceId) {
+    console.error("[public-checkout] No price ID found for plan:", plan)
+    return NextResponse.json(
+      { error: "Stripe price not configured for this plan" },
+      { status: 500 }
+    )
+  }
+
+  // Step 5: create/retrieve Stripe customer
+  const stripe = getStripe()
+  let customer
+  try {
+    customer = user.stripeCustomerId
+      ? await stripe.customers.retrieve(user.stripeCustomerId)
+      : await stripe.customers.create({
+          email: user.email,
+          name: user.name ?? undefined,
+          metadata: { appUserId: String(user.id) },
+        })
+  } catch (err) {
+    console.error("[public-checkout] Stripe customer error:", err)
+    return NextResponse.json(
+      { error: "Failed to create Stripe customer", details: String(err) },
+      { status: 500 }
+    )
+  }
+
+  if (!("id" in customer)) {
+    return NextResponse.json({ error: "Unable to resolve Stripe customer" }, { status: 500 })
+  }
+
+  // Step 6: save customer ID if new
+  if (!user.stripeCustomerId) {
+    try {
+      await pool.execute("UPDATE users SET stripe_customer_id = ? WHERE id = ?", [
+        customer.id,
+        user.id,
+      ])
+    } catch (err) {
+      console.error("[public-checkout] Failed to save stripe_customer_id (non-fatal):", err)
     }
-    const plan = body.plan
-    const email = body.email?.toLowerCase().trim()
-    if (!plan || !email) return NextResponse.json({ error: "Plan and email are required" }, { status: 400 })
+  }
 
-    const user = await getUserByEmail(email)
-    if (!user) return NextResponse.json({ error: "Account not found. Please sign up first." }, { status: 404 })
+  // Step 7: create checkout session
+  const trialDays =
+    plan === "starter"
+      ? Number(process.env.STRIPE_TRIAL_DAYS_STARTER ?? 7)
+      : Number(process.env.STRIPE_TRIAL_DAYS_GROWTH_AGENCY ?? process.env.STRIPE_TRIAL_DAYS ?? 14)
 
-    const priceId = await resolvePriceId(plan)
-    if (!priceId) return NextResponse.json({ error: "Stripe price id not configured" }, { status: 500 })
+  const appUrl = getAppUrl(request)
 
-    const trialDays =
-      plan === "starter"
-        ? Number(process.env.STRIPE_TRIAL_DAYS_STARTER ?? 7)
-        : Number(process.env.STRIPE_TRIAL_DAYS_GROWTH_AGENCY ?? process.env.STRIPE_TRIAL_DAYS ?? 14)
-
-    const stripe = getStripe()
-    const customer =
-      user.stripeCustomerId
-        ? await stripe.customers.retrieve(user.stripeCustomerId)
-        : await stripe.customers.create({
-            email: user.email,
-            name: user.name ?? undefined,
-            metadata: { appUserId: String(user.id) },
-          })
-
-    if (!("id" in customer)) {
-      return NextResponse.json({ error: "Unable to resolve Stripe customer" }, { status: 500 })
-    }
-
-    if (!user.stripeCustomerId) {
-      await pool.execute("UPDATE users SET stripe_customer_id = ? WHERE id = ?", [customer.id, user.id])
-    }
-
-    const appUrl = getAppUrl(request)
+  try {
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customer.id,
@@ -105,6 +171,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ url: session.url }, { status: 200 })
   } catch (err) {
+    console.error("[public-checkout] stripe.checkout.sessions.create threw:", err)
     return NextResponse.json(
       { error: "Failed to create checkout session", details: String(err) },
       { status: 500 }

@@ -529,7 +529,7 @@ export default function Home() {
               <div className="price-plan">Starter</div>
               <div className="price-num"><sup>$</sup>{prices[0]}<span>/mo</span></div>
               <div className="price-desc">For small businesses just getting started with Meta ads.</div>
-              <button className="price-btn price-btn-outline"           onClick={() => handlePlanClick("starter")} disabled={checkoutBusyPlan !== ""}>
+              <button className="price-btn price-btn-outline" onClick={() => handlePlanClick("starter")} disabled={checkoutBusyPlan !== ""}>
                 {checkoutBusyPlan === "starter" ? "Redirecting..." : "Start 7-day free trial"}
               </button>
               <ul className="price-features">
@@ -543,19 +543,19 @@ export default function Home() {
               <div className="price-plan" style={{ color: 'var(--violet)' }}>Growth</div>
               <div className="price-num" style={{ color: 'var(--violet)' }}><sup>$</sup>{prices[1]}<span>/mo</span></div>
               <div className="price-desc">All 3 platforms. Unlimited AI. The complete package.</div>
-              <button className="price-btn price-btn-filled"           onClick={() => handlePlanClick("growth")} disabled={checkoutBusyPlan !== ""}>
+              <button className="price-btn price-btn-filled" onClick={() => handlePlanClick("growth")} disabled={checkoutBusyPlan !== ""}>
                 {checkoutBusyPlan === "growth" ? "Redirecting..." : "Start 14-day free trial"}
               </button>
               <ul className="price-features">
-                {['vs competitors at $99/mo', 'You save $240/year and get more platforms', '3 ad accounts', 'Meta + Google + TikTok', 'Unlimited AI messages', 'Cross-platform dashboard', 'Full campaign control', 'Weekly AI reports + email', 'Budget burn alerts 24/7', 'Pixel health monitoring', 'Audience & lookalike creator', 'White-label reports', 'Multi-client dashboard'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
+                {['3 ad accounts', 'Meta + Google + TikTok', 'Unlimited AI messages', 'Cross-platform dashboard', 'Full campaign control', 'Weekly AI reports + email', 'Budget burn alerts 24/7', 'Pixel health monitoring', 'Audience & lookalike creator', 'White-label reports', 'Multi-client dashboard'].map(f => <li key={f} className="pf"><span className="pf-icon-ok">✓</span> {f}</li>)}
               </ul>
             </div>
             {/* Agency */}
             <div className="pricing-card" style={{ background: 'var(--navy)' }}>
               <div className="price-plan" style={{ color: 'rgba(255,255,255,0.4)' }}>Agency</div>
-              <div className="price-num" style={{ color: 'white' }}><sup>$</sup>{prices[2]}<span style={{ color: 'rgba(255,255,255,0.4)' }} />/mo</div>
+              <div className="price-num" style={{ color: 'white' }}><sup>$</sup>{prices[2]}<span style={{ color: 'rgba(255,255,255,0.4)' }}>/mo</span></div>
               <div className="price-desc" style={{ color: 'rgba(255,255,255,0.5)' }}>For agencies managing multiple client accounts.</div>
-              <button className="price-btn"           onClick={() => handlePlanClick("agency")} disabled={checkoutBusyPlan !== ""} style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>
+              <button className="price-btn" onClick={() => handlePlanClick("agency")} disabled={checkoutBusyPlan !== ""} style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.2)' }}>
                 {checkoutBusyPlan === "agency" ? "Redirecting..." : "Start 14-day free trial"}
               </button>
               <ul className="price-features">
