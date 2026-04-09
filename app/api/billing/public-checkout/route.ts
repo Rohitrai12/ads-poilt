@@ -63,13 +63,13 @@ export async function POST(request: NextRequest) {
   const email = body.email?.toLowerCase().trim()
 
   if (!plan || !email) {
-    return NextResponse.json({ error: "Plan and email are required" }, { status: 400 })
+    return NextResponse.json({ error: "Plan and email are required", code: "BAD_REQUEST" }, { status: 400 })
   }
 
   // Step 2: verify env
   if (!process.env.STRIPE_SECRET_KEY) {
     console.error("[public-checkout] STRIPE_SECRET_KEY is not set")
-    return NextResponse.json({ error: "Stripe is not configured on this server" }, { status: 500 })
+    return NextResponse.json({ error: "Stripe is not configured on this server", code: "STRIPE_NOT_CONFIGURED" }, { status: 500 })
   }
 
   // Step 3: look up user
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error("[public-checkout] getUserByEmail threw:", err)
     return NextResponse.json(
-      { error: "Database error. Please try again.", details: String(err) },
+      { error: "Database error. Please try again.", code: "DB_LOOKUP_FAILED", details: String(err) },
       { status: 500 }
     )
   }
@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error("[public-checkout] resolvePriceId threw:", err)
     return NextResponse.json(
-      { error: "Failed to resolve Stripe price", details: String(err) },
+      { error: "Failed to resolve Stripe price", code: "PRICE_RESOLUTION_FAILED", details: String(err) },
       { status: 500 }
     )
   }
@@ -106,39 +106,52 @@ export async function POST(request: NextRequest) {
   if (!priceId) {
     console.error("[public-checkout] No price ID found for plan:", plan)
     return NextResponse.json(
-      { error: "Stripe price not configured for this plan" },
+      { error: "Stripe price not configured for this plan", code: "PRICE_NOT_CONFIGURED" },
       { status: 500 }
     )
   }
 
   // Step 5: create/retrieve Stripe customer
   const stripe = getStripe()
-  let customer
+  let customerId: string | null = null
   try {
-    customer = user.stripeCustomerId
-      ? await stripe.customers.retrieve(user.stripeCustomerId)
-      : await stripe.customers.create({
+    if (user.stripeCustomerId) {
+      const existing = await stripe.customers.retrieve(user.stripeCustomerId)
+      if ("deleted" in existing && existing.deleted) {
+        const recreated = await stripe.customers.create({
           email: user.email,
           name: user.name ?? undefined,
           metadata: { appUserId: String(user.id) },
         })
+        customerId = recreated.id
+      } else {
+        customerId = existing.id
+      }
+    } else {
+      const created = await stripe.customers.create({
+        email: user.email,
+        name: user.name ?? undefined,
+        metadata: { appUserId: String(user.id) },
+      })
+      customerId = created.id
+    }
   } catch (err) {
     console.error("[public-checkout] Stripe customer error:", err)
     return NextResponse.json(
-      { error: "Failed to create Stripe customer", details: String(err) },
+      { error: "Failed to create Stripe customer", code: "CUSTOMER_CREATE_FAILED", details: String(err) },
       { status: 500 }
     )
   }
 
-  if (!("id" in customer)) {
-    return NextResponse.json({ error: "Unable to resolve Stripe customer" }, { status: 500 })
+  if (!customerId) {
+    return NextResponse.json({ error: "Unable to resolve Stripe customer", code: "CUSTOMER_RESOLVE_FAILED" }, { status: 500 })
   }
 
   // Step 6: save customer ID if new
   if (!user.stripeCustomerId) {
     try {
       await pool.execute("UPDATE users SET stripe_customer_id = ? WHERE id = ?", [
-        customer.id,
+        customerId,
         user.id,
       ])
     } catch (err) {
@@ -153,11 +166,17 @@ export async function POST(request: NextRequest) {
       : Number(process.env.STRIPE_TRIAL_DAYS_GROWTH_AGENCY ?? process.env.STRIPE_TRIAL_DAYS ?? 14)
 
   const appUrl = getAppUrl(request)
+  if (process.env.NODE_ENV === "production" && appUrl.includes("localhost")) {
+    return NextResponse.json(
+      { error: "Invalid NEXT_PUBLIC_APP_URL in production", code: "INVALID_APP_URL", details: `appUrl=${appUrl}` },
+      { status: 500 }
+    )
+  }
 
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      customer: customer.id,
+      customer: customerId,
       line_items: [{ price: priceId, quantity: 1 }],
       metadata: { plan_tier: plan, app_user_email: user.email },
       success_url: `${appUrl}/login?paid=1`,
@@ -173,7 +192,7 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error("[public-checkout] stripe.checkout.sessions.create threw:", err)
     return NextResponse.json(
-      { error: "Failed to create checkout session", details: String(err) },
+      { error: "Failed to create checkout session", code: "CHECKOUT_SESSION_CREATE_FAILED", details: String(err) },
       { status: 500 }
     )
   }

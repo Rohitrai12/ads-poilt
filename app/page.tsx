@@ -65,6 +65,7 @@ export default function Home() {
           ? `${data.error ?? "Checkout failed"}: ${data.details}`
           : (data.error ?? "Checkout failed")
         setCheckoutError(message)
+        alert(message)
         if (res.status === 404) {
           window.location.href = `/sign-up?email=${encodeURIComponent(email)}`
           return
