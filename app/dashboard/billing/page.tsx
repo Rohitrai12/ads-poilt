@@ -29,7 +29,7 @@ function fmtDate(iso: string | null) {
   return new Date(iso).toLocaleDateString()
 }
 
-export default function BillingPage() {
+export default function BillingPage() { 
   const [billing, setBilling] = useState<Billing | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
