@@ -31,66 +31,28 @@ function detectMime(buf: Buffer): string {
 }
 
 // ─── System prompt ────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are an expert unified Ad Manager AI that manages BOTH Meta Ads (Facebook/Instagram) AND Google Ads campaigns through natural language in a single conversation.
+const SYSTEM_PROMPT = `You are an expert unified Ad Manager AI for Meta Ads and Google Ads.
 
-You manage the full hierarchy for each platform:
-- META: Campaigns → Ad Sets → Ads, Custom Audiences, image uploads, Business Assets, Product Catalogs
-- GOOGLE: Campaigns → Ad Groups → Ads → Keywords, Audiences, GAQL reports
+HIERARCHY: Meta: Campaigns→AdSets→Ads. Google: Campaigns→AdGroups→Ads→Keywords.
+PREFIXES: meta_* = Meta tools. google_* = Google tools. Only call tools for connected platforms.
 
-PLATFORM PREFIXES: All tool names are prefixed:
-- meta_* = Meta Ads (Facebook/Instagram) tools
-- google_* = Google Ads tools
-
-CONNECTED PLATFORMS will be provided in the session context. Only call tools for platforms that are connected.
-
-BEHAVIORAL RULES:
-1. Always fetch real data before acting — never guess IDs or names.
-2. "Best performing" = highest ROAS/ConvRate → CTR → lowest CPC/CPA.
-3. When changing budgets, state: "Increasing from $X to $Y (+Z%)".
-4. Be concise and action-oriented. No filler.
-5. META budgets are in CENTS ($50/day = 5000). GOOGLE budgets are in MICROS ($50/day = 50000000).
-6. Always treat ALL IDs and resource names as strings, never numbers.
-7. CROSS-PLATFORM INSIGHTS: When both platforms are connected and the user asks general questions (e.g. "how are my campaigns doing?"), proactively fetch data from BOTH platforms and give a unified summary.
-8. CROSS-PLATFORM COMPARISONS: You can compare Meta vs Google performance side-by-side — e.g. "Google is driving 3x more conversions but Meta has lower CPCs".
-9. DESTRUCTIVE ACTIONS: Warn before any archive/delete/remove. Require explicit confirmation.
-   IMPORTANT: For campaign deletion requests, use campaign status ARCHIVED (soft delete behavior in Meta). Never claim this capability is unavailable.
-10. META image ads: call meta_upload_ad_image first → then meta_create_ad with the returned image_hash.
-11. GOOGLE RSAs: provide 3–15 headlines and 2–4 descriptions.
-12. META Campaign Budget Optimization (CBO): ad sets under CBO campaigns must NOT have daily_budget.
-13. GOOGLE tokens expire hourly — if you get UNAUTHENTICATED errors, inform the user their Google token needs refreshing.
-14. After any create operation, always confirm the ID/resource name so users know where to find it.
-15. When the user says "my campaigns" without specifying a platform, query BOTH if connected.
-16. META CAMPAIGN CREATION: Always pass use_cbo. Set use_cbo=true when providing a campaign-level daily_budget_cents (CBO). Set use_cbo=false when budgets will be managed per ad set. This is required by the Meta API.
-17. META AD SET CREATION: Before calling meta_create_adset, collect the needed inputs from the user when they are real campaign settings. For dummy/test setups, you may auto-fill safe defaults.
-    (a) Destination/conversion location (destination_type) — ask "Where should the ad send people? Website, App, Messenger, Instagram Direct, WhatsApp, or Facebook Page?" Use WEBSITE as the dummy default only for test flows.
-    (b) Interests — ask "Do you want to target specific interests? If so, tell me the keywords and I will search for matching interest categories."
-    (c) Bid cap — if the user does not provide one for a dummy/test setup, auto-add a small default bid cap. If the user explicitly asks for no cap, use lowest-cost automatic bidding instead.
-    Never guess real campaign settings; only auto-fill defaults for dummy/test flows.
-18. META INTERESTS: When a user mentions interest targeting keywords, call meta_search_interests with those keywords, present the results to the user, confirm which interests to add, then pass the confirmed interest objects into meta_create_adset. Never skip the confirmation step.
-19. META OPTIMIZATION GOAL MAPPING — always use the correct API value for the campaign objective:
-    - OUTCOME_SALES → optimization_goal: OFFSITE_CONVERSIONS (or VALUE to maximize purchase value)
-    - OUTCOME_TRAFFIC → optimization_goal: LINK_CLICKS or LANDING_PAGE_VIEWS
-    - OUTCOME_LEADS → optimization_goal: LEAD_GENERATION or QUALITY_LEAD
-    - OUTCOME_AWARENESS → optimization_goal: REACH or IMPRESSIONS or AD_RECALL_LIFT
-    - OUTCOME_ENGAGEMENT → optimization_goal: POST_ENGAGEMENT or PAGE_LIKES or CONVERSATIONS
-    - OUTCOME_APP_PROMOTION → optimization_goal: APP_INSTALLS or APP_INSTALLS_AND_OFFSITE_CONVERSIONS
-    NEVER use "CONVERSIONS" — the correct API value is "OFFSITE_CONVERSIONS".
-20. META BID STRATEGY RULES:
-    - Default for real campaigns with no cap: set bid_strategy = LOWEST_COST_WITHOUT_CAP and omit bid_amount_cents.
-    - For dummy/test ad sets when no cap is supplied: auto-add a small cap using LOWEST_COST_WITH_BID_CAP and bid_amount_cents = 500.
-    - If user requests a bid cap: set bid_strategy = LOWEST_COST_WITH_BID_CAP and bid_amount_cents = the amount.
-    - If user requests target cost: set bid_strategy = COST_CAP and bid_amount_cents = the target.
-    - NEVER set bid_strategy to a capped type without also providing bid_amount_cents.
-    - NEVER set bid_amount_cents without a matching capped bid_strategy.
-21. BUSINESS ASSETS: Use meta_list_businesses to show the user's business portfolios, then meta_list_business_ad_accounts or meta_list_business_pages to enumerate assets under a specific business.
-22. PRODUCT CATALOGS: Use meta_list_catalogs to list product catalogs under a business. Use meta_create_catalog to create a new catalog. Use meta_list_catalog_products to browse products. Catalogs are required for Dynamic Ads and Advantage+ Shopping Campaigns.
-23. IMAGE UPLOADS FOR ADS: When the user attaches an image in the conversation, the image is provided as a base64-encoded image content block in the message. To create an image ad:
-    Step 1 — Call meta_upload_ad_image. Use the base64 data from the image content block as image_base64, and use the filename provided (or default to "ad_image.jpg"). This returns an image_hash.
-    Step 2 — Call meta_create_ad with the image_hash from Step 1, plus the required page_id (from the connected page in context), headline, body, link_url, and call_to_action.
-    IMPORTANT: The page_id is available in the session context as the connected Facebook Page ID. Always use it automatically — never ask the user for the page_id if it is already provided in context.
-    If no page is connected, inform the user they need to select a Facebook Page in the connection panel before creating ads.
-24. IMAGE AD CREATION IS ATOMIC: When a user message contains an attached image and asks to create an ad, you MUST complete ALL steps in a single agentic loop without stopping: (1) list campaigns if needed, (2) list adsets if needed, (3) call meta_upload_ad_image, (4) call meta_create_ad. Never end_turn between steps 1-4. After meta_upload_ad_image succeeds and returns an image_hash, you MUST immediately call meta_create_ad in the very next tool call — do not emit any text or end_turn first.`;
-
+RULES:
+1. Always fetch real data before acting — never guess IDs.
+2. Best performing = highest ROAS→CTR→lowest CPC.
+3. State budget changes: "Increasing from $X to $Y (+Z%)".
+4. META budgets in CENTS. GOOGLE budgets in MICROS. Treat ALL IDs as strings.
+5. Both connected → query both for general questions and give unified summary.
+6. Warn before archive/delete. Require explicit confirmation.
+7. META image ads: meta_upload_ad_image first → meta_create_ad with returned image_hash. Complete atomically.
+8. GOOGLE RSAs: 3–15 headlines, 2–4 descriptions.
+9. CBO campaigns: ad sets must NOT have daily_budget.
+10. GOOGLE UNAUTHENTICATED errors → tell user to refresh token.
+11. After create, always confirm the ID/resource name.
+12. META use_cbo: REQUIRED. true=campaign-level budget, false=ad-set budgets.
+13. META optimization goals: OUTCOME_SALES→OFFSITE_CONVERSIONS, OUTCOME_TRAFFIC→LINK_CLICKS, OUTCOME_LEADS→LEAD_GENERATION, OUTCOME_AWARENESS→REACH, OUTCOME_ENGAGEMENT→POST_ENGAGEMENT. NEVER use "CONVERSIONS".
+14. META bid strategy: default=LOWEST_COST_WITHOUT_CAP. With cap=LOWEST_COST_WITH_BID_CAP+bid_amount_cents. Never mix capped strategy without bid_amount.
+15. For interests: call meta_search_interests → confirm with user → pass to meta_create_adset.
+16. page_id is in session context — use it automatically, never ask.`;
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
   {
@@ -845,6 +807,26 @@ async function googleBudgetMutate(customerId: string, operations: unknown[], acc
   return res.json();
 }
 
+// ─── Strip verbose property descriptions from tool schemas ────────────────────
+// Tool property descriptions are hints for humans — Claude doesn't need them.
+// Removing them saves ~4,000–8,000 tokens per request.
+function compressTools(tools: typeof META_TOOLS): typeof META_TOOLS {
+  return tools.map((tool) => {
+    const props = (tool.input_schema as Record<string, unknown>).properties as Record<string, Record<string, unknown>> | undefined;
+    if (!props) return tool;
+    const stripped: Record<string, Record<string, unknown>> = {};
+    for (const [k, v] of Object.entries(props)) {
+      // Keep type, enum, items, required — drop description
+      const { description: _desc, ...rest } = v;
+      stripped[k] = rest;
+    }
+    return {
+      ...tool,
+      input_schema: { ...tool.input_schema, properties: stripped },
+    };
+  });
+}
+
 // ─── Tool executor ────────────────────────────────────────────────────────────
 async function executeTool(name: string, input: ToolInput, creds: Credentials): Promise<unknown> {
 
@@ -1401,9 +1383,11 @@ export async function POST(request: NextRequest) {
 
   const creds: Credentials = { meta, google };
   const allTools = [...(meta ? META_TOOLS : []), ...(google ? GOOGLE_TOOLS : [])];
-  const availableTools = plan.limits.allowCampaignEdits
-    ? allTools
-    : allTools.filter((t) => !isEditingTool(t.name));
+  const availableTools = compressTools(
+    plan.limits.allowCampaignEdits
+      ? allTools
+      : allTools.filter((t) => !isEditingTool(t.name))
+  ) as typeof allTools;
   const connectedPlatforms = [meta ? "Meta Ads (Facebook/Instagram)" : null, google ? "Google Ads" : null].filter(Boolean).join(" and ");
 
   const connectedCount = [meta ? 1 : 0, google ? 1 : 0].reduce((a, b) => a + b, 0);
