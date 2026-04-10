@@ -787,6 +787,24 @@ async function googleQuery(customerId: string, query: string, accessToken: strin
   return res.json();
 }
 
+function truncateHistory(msgs: ClaudeMessage[], maxTokenEstimate = 12000): ClaudeMessage[] {
+  // Keep the first message (context) + last N messages
+  // Rough estimate: 1 token ≈ 4 chars
+  let totalChars = 0;
+  const kept: ClaudeMessage[] = [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const content = typeof msgs[i].content === "string"
+      ? msgs[i].content as string
+      : JSON.stringify(msgs[i].content);
+    totalChars += content.length;
+    if (totalChars > maxTokenEstimate * 4) break;
+    kept.unshift(msgs[i]);
+  }
+  // Always keep at least the last 2 messages
+  if (kept.length === 0 && msgs.length > 0) return msgs.slice(-2);
+  return kept;
+}
+
 async function googleMutate(customerId: string, operations: unknown[], accessToken: string): Promise<unknown> {
   const res = await fetch(`${GOOGLE_ADS_BASE}/customers/${customerId}/googleAds:mutate`, {
     method: "POST",
@@ -1447,11 +1465,13 @@ export async function POST(request: NextRequest) {
       const pingInterval = setInterval(() => { send({ type: "ping" }); }, 20_000);
 
       try {
-        const claudeMessages: ClaudeMessage[] = messages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: Array.isArray(m.content) ? (m.content as ClaudeContentBlock[]) : (m.content as string),
-        }));
-
+        const claudeMessages: ClaudeMessage[] = truncateHistory(
+          messages.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: Array.isArray(m.content) ? (m.content as ClaudeContentBlock[]) : (m.content as string),
+          }))
+        );
+        
         let iteration = 0;
         const MAX_ITERATIONS = 20;
 
@@ -1472,7 +1492,7 @@ export async function POST(request: NextRequest) {
               },
               body: JSON.stringify({
                 model: CLAUDE_MODEL,
-                max_tokens: 8096,
+                max_tokens: 4096,
                 system: systemWithContext,
                 tools: availableTools,
                 messages: claudeMessages,
@@ -1573,8 +1593,14 @@ export async function POST(request: NextRequest) {
                 ]);
 
                 resultText = JSON.stringify(result);
+                if (resultText.length > 8000) {
+                  // Truncate oversized tool results — keep first 8000 chars
+                  resultText = resultText.slice(0, 8000) + '…(truncated)"}';
+                }
+                
                 send({ type: "tool_result", tool: toolBlock.name, platform, text: fmtResult(toolBlock.name, result), data: result });
 
+                
                 // ── FIX: Track successful image uploads across ALL iterations ──
                 if (toolBlock.name === "meta_upload_ad_image") {
                   try {
@@ -1598,6 +1624,9 @@ export async function POST(request: NextRequest) {
             // Push ALL tool results as a single user turn
             claudeMessages.push({ role: "user", content: toolResults });
 
+            if (iteration > 1) {
+              await new Promise(r => setTimeout(r, 1500)); // 1.5s between iterations
+            }
             // If we just uploaded an image successfully, inject a hard forcing nudge
             if (justUploadedImage) {
               claudeMessages.push({
