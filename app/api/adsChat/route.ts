@@ -1101,9 +1101,8 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     }
 
     if (name === "meta_list_custom_audiences") {
-      return metaGet(`${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count&access_token=${tok}`);
+      return metaGet(`${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count_lower_bound,approximate_count_upper_bound&access_token=${tok}`);
     }
-
     if (name === "meta_get_user_profile") {
       const { fields = ["id", "name", "email"] } = input as { fields?: string[] };
       return metaGet(`${META_BASE}/me?fields=${(fields as string[]).join(",")}&access_token=${tok}`);
@@ -1477,12 +1476,38 @@ export async function POST(request: NextRequest) {
 
         // ── FIX: Track whether meta_upload_ad_image has succeeded in this session ──
         let hasUploadedImageSuccessfully = false;
+        // Add this function near the top of the file:
+function trimToolResults(msgs: ClaudeMessage[], maxResultLen = 2000): ClaudeMessage[] {
+  return msgs.map((m) => {
+    if (m.role !== "user" || !Array.isArray(m.content)) return m;
+    const content = (m.content as ClaudeContentBlock[]).map((block) => {
+      if (block.type !== "tool_result") return block;
+      const b = block as { type: "tool_result"; tool_use_id: string; content: string };
+      if (b.content.length <= maxResultLen) return b;
+      // Keep first 2000 chars of each tool result
+      return { ...b, content: b.content.slice(0, maxResultLen) + '"…(trimmed)"}' };
+    });
+    return { ...m, content };
+  });
+}
 
         while (iteration < MAX_ITERATIONS) {
           iteration++;
 
           let claudeRes: Response;
+          
           try {
+            // Right before:  claudeRes = await fetch("https://api.anthropic.com/v1/messages", ...
+const messagesForClaude = trimToolResults(claudeMessages);
+
+// And update the fetch body to use messagesForClaude:
+body: JSON.stringify({
+  model: CLAUDE_MODEL,
+  max_tokens: 4096,           // ← also reduce from 8096
+  system: systemWithContext,
+  tools: availableTools,
+  messages: messagesForClaude,  // ← was claudeMessages
+}),
             claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
               method: "POST",
               headers: {
