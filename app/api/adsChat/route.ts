@@ -1495,7 +1495,7 @@ export async function POST(request: NextRequest) {
               },
               body: JSON.stringify({
                 model: CLAUDE_MODEL,
-                max_tokens: 4096,
+                max_tokens: 4046,
                 system: systemWithContext,
                 tools: availableTools,
                 messages: messagesForClaude,  // ✅ correctly uses trimmed messages
