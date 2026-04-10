@@ -810,8 +810,8 @@ async function googleBudgetMutate(customerId: string, operations: unknown[], acc
 // ─── Strip verbose property descriptions from tool schemas ────────────────────
 // Tool property descriptions are hints for humans — Claude doesn't need them.
 // Removing them saves ~4,000–8,000 tokens per request.
-function compressTools(tools: typeof META_TOOLS): typeof META_TOOLS {
-  return tools.map((tool) => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compressTools(tools: any[]): any[] {  return tools.map((tool) => {
     const props = (tool.input_schema as Record<string, unknown>).properties as Record<string, Record<string, unknown>> | undefined;
     if (!props) return tool;
     const stripped: Record<string, Record<string, unknown>> = {};
