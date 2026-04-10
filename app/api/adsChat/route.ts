@@ -1475,12 +1475,6 @@ export async function POST(request: NextRequest) {
         // ── FIX: Track whether meta_upload_ad_image has succeeded in this session ──
         let hasUploadedImageSuccessfully = false;
 
-
-        while (iteration < MAX_ITERATIONS) {
-          iteration++;
-
-          let hasUploadedImageSuccessfully = false;
-
         while (iteration < MAX_ITERATIONS) {
           iteration++;
 
@@ -1489,8 +1483,7 @@ export async function POST(request: NextRequest) {
           try {
             const messagesForClaude = trimToolResults(claudeMessages);
 
-            claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-              method: "POST",
+            claudeRes = await fetch("https://api.anthropic.com/v1/messages", {              method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
