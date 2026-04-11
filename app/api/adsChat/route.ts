@@ -45,12 +45,17 @@ Rules:
 - Confirm before delete
 - Return ID after create
 
+Image ads (Meta):
+1. Call meta_upload_ad_image FIRST with the base64 image data
+2. Wait for image_hash in the result
+3. Only then call meta_create_ad with that image_hash
+Never skip step 1. Never call meta_create_ad without an image_hash when an image is attached.
+
 Meta:
 - use_cbo req (T=camp, F=AS)
 - CBO→no AS budget
 - Map goals (no CONVERSIONS)
 - Bid: default lowest; cap→need bid_amount
-- Img: upload→create (atomic)
 - Interests: search→confirm→use
 - page_id auto
 
@@ -815,21 +820,25 @@ async function googleBudgetMutate(customerId: string, operations: unknown[], acc
 // Tool property descriptions are hints for humans — Claude doesn't need them.
 // Removing them saves ~4,000–8,000 tokens per request.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function compressTools(tools: any[]): any[] {  return tools.map((tool) => {
-    const props = (tool.input_schema as Record<string, unknown>).properties as Record<string, Record<string, unknown>> | undefined;
+function compressTools(tools: any[]): any[] {
+  return tools.map((tool) => {
+    const props = (tool.input_schema as Record<string, unknown>).properties as
+      Record<string, Record<string, unknown>> | undefined;
     if (!props) return tool;
+
+    // Keep descriptions on tools with many params — Claude needs them to call correctly
+    const propCount = Object.keys(props).length;
+    if (propCount > 4) return tool; // ← preserve for create/complex tools
+
     const stripped: Record<string, Record<string, unknown>> = {};
     for (const [k, v] of Object.entries(props)) {
-      // Keep type, enum, items, required — drop description
       const { description: _desc, ...rest } = v;
       stripped[k] = rest;
     }
-    return {
-      ...tool,
-      input_schema: { ...tool.input_schema, properties: stripped },
-    };
+    return { ...tool, input_schema: { ...tool.input_schema, properties: stripped } };
   });
 }
+
 
 // ─── Tool executor ────────────────────────────────────────────────────────────
 async function executeTool(name: string, input: ToolInput, creds: Credentials): Promise<unknown> {
@@ -1495,7 +1504,7 @@ export async function POST(request: NextRequest) {
               },
               body: JSON.stringify({
                 model: CLAUDE_MODEL,
-                max_tokens: 2046,
+                max_tokens: 4096,
                 system: systemWithContext,
                 tools: availableTools,
                 messages: messagesForClaude,  // ✅ correctly uses trimmed messages
