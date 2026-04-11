@@ -30,7 +30,7 @@ function detectMime(buf: Buffer): string {
   return "image/jpeg";
 }
 
-// ─── System prompt ────────────────────────────────────────────────────────────
+// ─── FIX 3: Expanded system prompt ───────────────────────────────────────────
 const SYSTEM_PROMPT = `Ad AI (Meta+Google)
 
 Meta: C→AS→Ad | Google: C→AG→Ad→KW
@@ -45,16 +45,22 @@ Rules:
 - Confirm before delete
 - Return ID after create
 
+Available Meta write tools (use them directly — do NOT say they are unavailable):
+- meta_create_campaign, meta_update_campaign, meta_update_campaign_budget, meta_update_campaign_status
+- meta_create_adset, meta_update_adset_status
+- meta_create_ad, meta_update_ad_status
+- meta_upload_ad_image, meta_bulk_update_campaign_status
+
 Image ads (Meta):
-1. Call meta_upload_ad_image FIRST with the base64 image data
-2. Wait for image_hash in the result
+1. Call meta_upload_ad_image FIRST with base64 image data
+2. Wait for image_hash in result
 3. Only then call meta_create_ad with that image_hash
-Never skip step 1. Never call meta_create_ad without an image_hash when an image is attached.
+Never call meta_create_ad without first uploading if an image is attached.
 
 Meta:
 - use_cbo req (T=camp, F=AS)
 - CBO→no AS budget
-- Map goals (no CONVERSIONS)
+- Map goals (no CONVERSIONS→OFFSITE_CONVERSIONS)
 - Bid: default lowest; cap→need bid_amount
 - Interests: search→confirm→use
 - page_id auto
@@ -62,6 +68,7 @@ Meta:
 Google:
 - RSA: 3–15 H, 2–4 D
 - UNAUTH→refresh token`;
+
 // ─── META TOOLS ───────────────────────────────────────────────────────────────
 const META_TOOLS = [
   {
@@ -100,10 +107,26 @@ const META_TOOLS = [
         daily_budget_cents: { type: "number", description: "Campaign-level daily budget in cents. Only for CBO." },
         use_cbo: {
           type: "boolean",
-          description: "REQUIRED. true = CBO. false = ad-set level budgets.",
+          description: "REQUIRED. true = CBO (campaign-level budget). false = ad-set level budgets.",
         },
       },
       required: ["name", "objective", "special_ad_category", "use_cbo"],
+    },
+  },
+  // ─── FIX 4: NEW — update campaign name/status/budget in one tool ──────────
+  {
+    name: "meta_update_campaign",
+    description: "Update any field on a Meta campaign: name, status, daily budget (cents), or special_ad_category.",
+    input_schema: {
+      type: "object",
+      properties: {
+        campaign_id: { type: "string", description: "ID of the campaign to update." },
+        name: { type: "string", description: "New campaign name." },
+        status: { type: "string", enum: ["ACTIVE", "PAUSED", "ARCHIVED"], description: "New status." },
+        daily_budget_cents: { type: "number", description: "New daily budget in cents." },
+        reason: { type: "string", description: "Reason for the update (for audit log)." },
+      },
+      required: ["campaign_id"],
     },
   },
   {
@@ -156,7 +179,7 @@ const META_TOOLS = [
   },
   {
     name: "meta_create_adset",
-    description: "Create a Meta ad set.",
+    description: "Create a Meta ad set. targeting_countries MUST be an array of ISO country codes e.g. ['US']. optimization_goal and billing_event are required.",
     input_schema: {
       type: "object",
       properties: {
@@ -168,7 +191,11 @@ const META_TOOLS = [
           enum: ["WEBSITE", "APP", "MESSENGER", "INSTAGRAM_DIRECT", "WHATSAPP", "ON_AD", "FACEBOOK", "SHOP_AUTOMATIC"],
           description: "REQUIRED. Where the ad sends people.",
         },
-        targeting_countries: { type: "array", items: { type: "string" } },
+        targeting_countries: {
+          type: "array",
+          items: { type: "string" },
+          description: "REQUIRED. Array of ISO 3166-1 alpha-2 country codes, e.g. ['US', 'GB'].",
+        },
         age_min: { type: "number" },
         age_max: { type: "number" },
         interests: {
@@ -277,17 +304,17 @@ const META_TOOLS = [
   },
   {
     name: "meta_create_ad",
-    description: "Create a Meta ad (image or text/link). For image ads, first call meta_upload_ad_image to get the image_hash, then pass it here.",
+    description: "Create a Meta ad (image or text/link). link_url is REQUIRED — always provide a real https:// URL. For image ads, first call meta_upload_ad_image to get the image_hash, then pass it here.",
     input_schema: {
       type: "object",
       properties: {
-        adset_id: { type: "string" },
-        name: { type: "string" },
+        adset_id: { type: "string", description: "ID of the ad set to create the ad in." },
+        name: { type: "string", description: "Ad name." },
         page_id: { type: "string", description: "Facebook Page ID. Use the connected page from context." },
         image_hash: { type: "string", description: "Hash returned by meta_upload_ad_image. Required for image ads." },
-        headline: { type: "string" },
-        body: { type: "string" },
-        link_url: { type: "string" },
+        headline: { type: "string", description: "Ad headline text." },
+        body: { type: "string", description: "Ad primary body text." },
+        link_url: { type: "string", description: "REQUIRED. Destination URL starting with https://. Always include this." },
         call_to_action: {
           type: "string",
           enum: [
@@ -759,8 +786,6 @@ async function googleQuery(customerId: string, query: string, accessToken: strin
 }
 
 function truncateHistory(msgs: ClaudeMessage[], maxTokenEstimate = 12000): ClaudeMessage[] {
-  // Keep the first message (context) + last N messages
-  // Rough estimate: 1 token ≈ 4 chars
   let totalChars = 0;
   const kept: ClaudeMessage[] = [];
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -771,7 +796,6 @@ function truncateHistory(msgs: ClaudeMessage[], maxTokenEstimate = 12000): Claud
     if (totalChars > maxTokenEstimate * 4) break;
     kept.unshift(msgs[i]);
   }
-  // Always keep at least the last 2 messages
   if (kept.length === 0 && msgs.length > 0) return msgs.slice(-2);
   return kept;
 }
@@ -789,7 +813,6 @@ async function googleMutate(customerId: string, operations: unknown[], accessTok
   return res.json();
 }
 
-// ─── Trim tool results to prevent token overflow ──────────────────────────────
 function trimToolResults(msgs: ClaudeMessage[], maxResultLen = 2000): ClaudeMessage[] {
   return msgs.map((m) => {
     if (m.role !== "user" || !Array.isArray(m.content)) return m;
@@ -816,9 +839,7 @@ async function googleBudgetMutate(customerId: string, operations: unknown[], acc
   return res.json();
 }
 
-// ─── Strip verbose property descriptions from tool schemas ────────────────────
-// Tool property descriptions are hints for humans — Claude doesn't need them.
-// Removing them saves ~4,000–8,000 tokens per request.
+// ─── FIX 1: compressTools — preserve descriptions for complex tools ────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function compressTools(tools: any[]): any[] {
   return tools.map((tool) => {
@@ -826,19 +847,23 @@ function compressTools(tools: any[]): any[] {
       Record<string, Record<string, unknown>> | undefined;
     if (!props) return tool;
 
-    // Keep descriptions on tools with many params — Claude needs them to call correctly
+    // Keep full descriptions on tools with >4 params — the model needs them
+    // to know what each field does (e.g. meta_create_ad, meta_create_adset)
     const propCount = Object.keys(props).length;
-    if (propCount > 4) return tool; // ← preserve for create/complex tools
+    if (propCount > 4) return tool;
 
+    // Strip descriptions only from simple tools (≤4 params) to save tokens
     const stripped: Record<string, Record<string, unknown>> = {};
     for (const [k, v] of Object.entries(props)) {
       const { description: _desc, ...rest } = v;
       stripped[k] = rest;
     }
-    return { ...tool, input_schema: { ...tool.input_schema, properties: stripped } };
+    return {
+      ...tool,
+      input_schema: { ...tool.input_schema, properties: stripped },
+    };
   });
 }
-
 
 // ─── Tool executor ────────────────────────────────────────────────────────────
 async function executeTool(name: string, input: ToolInput, creds: Credentials): Promise<unknown> {
@@ -871,31 +896,42 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
         special_ad_categories: JSON.stringify([special_ad_category]),
         access_token: tok,
       });
-      // Keep budget-sharing disabled to avoid Meta conflicts across campaign configurations.
       p.set("is_adset_budget_sharing_enabled", "false");
       if (use_cbo === true && daily_budget_cents) {
         p.set("daily_budget", String(Math.round(daily_budget_cents)));
       }
-      // For non-CBO flows, omit campaign-level budget and let ad sets own budgets.
       const firstTry = (await metaPost(`${META_BASE}/${acct}/campaigns`, p)) as Record<string, unknown>;
       if (firstTry?.id) return firstTry;
       const err = firstTry?.error as Record<string, unknown> | undefined;
       const subcode = String(err?.error_subcode ?? "");
       if (subcode === "4834002" || subcode === "4834005") {
         const retry = new URLSearchParams({
-          name: n,
-          objective,
-          status: "PAUSED",
+          name: n, objective, status: "PAUSED",
           special_ad_categories: JSON.stringify([special_ad_category]),
           access_token: tok,
         });
         if (use_cbo === true && daily_budget_cents) {
           retry.set("daily_budget", String(Math.round(daily_budget_cents)));
         }
-        const secondTry = await metaPost(`${META_BASE}/${acct}/campaigns`, retry);
-        return secondTry;
+        return metaPost(`${META_BASE}/${acct}/campaigns`, retry);
       }
       return firstTry;
+    }
+
+    // ─── FIX 4: meta_update_campaign — general campaign update (name, status, budget) ──
+    if (name === "meta_update_campaign") {
+      const { campaign_id, name: newName, status, daily_budget_cents } = input as {
+        campaign_id: string; name?: string; status?: string; daily_budget_cents?: number; reason?: string;
+      };
+      const p = new URLSearchParams({ access_token: tok });
+      if (newName) p.set("name", newName);
+      if (status) p.set("status", status);
+      if (daily_budget_cents) p.set("daily_budget", String(Math.round(daily_budget_cents)));
+      const result = (await metaPost(`${META_BASE}/${String(campaign_id)}`, p)) as Record<string, unknown>;
+      if (result?.success || result?.id) {
+        return { success: true, campaign_id, updated: { name: newName, status, daily_budget_cents } };
+      }
+      return result;
     }
 
     if (name === "meta_update_campaign_budget") {
@@ -1112,6 +1148,7 @@ async function executeTool(name: string, input: ToolInput, creds: Credentials): 
     if (name === "meta_list_custom_audiences") {
       return metaGet(`${META_BASE}/${acct}/customaudiences?fields=id,name,subtype,approximate_count_lower_bound,approximate_count_upper_bound&access_token=${tok}`);
     }
+
     if (name === "meta_get_user_profile") {
       const { fields = ["id", "name", "email"] } = input as { fields?: string[] };
       return metaGet(`${META_BASE}/me?fields=${(fields as string[]).join(",")}&access_token=${tok}`);
@@ -1368,21 +1405,13 @@ export async function POST(request: NextRequest) {
 
   if (plan.limits.monthlyAiMessages !== "unlimited" && plan.view.usage.monthlyMessageCount >= plan.limits.monthlyAiMessages) {
     return NextResponse.json(
-      {
-        error: "Monthly AI message limit reached",
-        code: "MESSAGE_LIMIT_REACHED",
-        billing: plan.view,
-      },
+      { error: "Monthly AI message limit reached", code: "MESSAGE_LIMIT_REACHED", billing: plan.view },
       { status: 429 }
     );
   }
   if (reportPrompt && plan.limits.monthlyAiReports !== "unlimited" && plan.view.usage.monthlyReportCount >= plan.limits.monthlyAiReports) {
     return NextResponse.json(
-      {
-        error: "Monthly AI report limit reached",
-        code: "REPORT_LIMIT_REACHED",
-        billing: plan.view,
-      },
+      { error: "Monthly AI report limit reached", code: "REPORT_LIMIT_REACHED", billing: plan.view },
       { status: 429 }
     );
   }
@@ -1406,21 +1435,13 @@ export async function POST(request: NextRequest) {
   const connectedCount = [meta ? 1 : 0, google ? 1 : 0].reduce((a, b) => a + b, 0);
   if (google && !plan.limits.allowGoogleAds) {
     return NextResponse.json(
-      {
-        error: "Your current plan supports Meta Ads only. Upgrade to Growth or Agency to use Google Ads.",
-        code: "GOOGLE_NOT_ALLOWED_FOR_PLAN",
-        billing: plan.view,
-      },
+      { error: "Your current plan supports Meta Ads only. Upgrade to Growth or Agency to use Google Ads.", code: "GOOGLE_NOT_ALLOWED_FOR_PLAN", billing: plan.view },
       { status: 402 }
     );
   }
   if (connectedCount > plan.limits.allowedPlatforms) {
     return NextResponse.json(
-      {
-        error: "Your plan allows only one connected platform at a time.",
-        code: "PLATFORM_LIMIT_REACHED",
-        billing: plan.view,
-      },
+      { error: "Your plan allows only one connected platform at a time.", code: "PLATFORM_LIMIT_REACHED", billing: plan.view },
       { status: 402 }
     );
   }
@@ -1430,11 +1451,7 @@ export async function POST(request: NextRequest) {
     body.metaConnectionsCount > plan.limits.adAccountsLimit
   ) {
     return NextResponse.json(
-      {
-        error: "Your plan ad account limit has been reached.",
-        code: "AD_ACCOUNT_LIMIT_REACHED",
-        billing: plan.view,
-      },
+      { error: "Your plan ad account limit has been reached.", code: "AD_ACCOUNT_LIMIT_REACHED", billing: plan.view },
       { status: 402 }
     );
   }
@@ -1452,8 +1469,6 @@ export async function POST(request: NextRequest) {
   const encoder = new TextEncoder();
   let controllerClosed = false;
 
-  // ── Extract image blocks from the ENTIRE conversation (not just last message) ──
-  // We look at the last user message for re-injection nudges
   const lastUserMsg = messages[messages.length - 1];
   const imageBlocks: ClaudeContentBlock[] = Array.isArray(lastUserMsg?.content)
     ? (lastUserMsg.content as Array<{ type: string; [key: string]: unknown }>)
@@ -1461,7 +1476,6 @@ export async function POST(request: NextRequest) {
         .map((b) => b as unknown as ClaudeContentBlock)
     : [];
 
-  // Detect if ANY message in the conversation contains images (for context)
   const conversationHasImages = imageBlocks.length > 0;
 
   const stream = new ReadableStream({
@@ -1481,11 +1495,9 @@ export async function POST(request: NextRequest) {
             content: Array.isArray(m.content) ? (m.content as ClaudeContentBlock[]) : (m.content as string),
           }))
         );
-        
+
         let iteration = 0;
         const MAX_ITERATIONS = 20;
-
-        // ── FIX: Track whether meta_upload_ad_image has succeeded in this session ──
         let hasUploadedImageSuccessfully = false;
 
         while (iteration < MAX_ITERATIONS) {
@@ -1496,7 +1508,8 @@ export async function POST(request: NextRequest) {
           try {
             const messagesForClaude = trimToolResults(claudeMessages);
 
-            claudeRes = await fetch("https://api.anthropic.com/v1/messages", {              method: "POST",
+            claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
@@ -1504,10 +1517,10 @@ export async function POST(request: NextRequest) {
               },
               body: JSON.stringify({
                 model: CLAUDE_MODEL,
-                max_tokens: 4096,
+                max_tokens: 4096, // FIX 2: raised from 2046
                 system: systemWithContext,
                 tools: availableTools,
-                messages: messagesForClaude,  // ✅ correctly uses trimmed messages
+                messages: messagesForClaude,
               }),
             });
 
@@ -1529,7 +1542,6 @@ export async function POST(request: NextRequest) {
 
           const { content, stop_reason } = responseJson;
 
-          // Stream text blocks
           for (const block of content) {
             if (block.type === "text") {
               const textBlock = block as { type: "text"; text: string };
@@ -1537,13 +1549,10 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          // ── Natural end ───────────────────────────────────────────────────
           if (stop_reason === "end_turn") {
             const lastTextBlock = content.filter((b) => b.type === "text").pop() as { type: "text"; text: string } | undefined;
             const lastText = lastTextBlock?.text?.trim() ?? "";
 
-            // ── FIX: If there are image blocks in the request but the image hasn't
-            // been uploaded yet, Claude is pausing mid-flow. Force it to continue. ──
             const pendingImageUpload = conversationHasImages && !hasUploadedImageSuccessfully;
 
             const looksLikeUnfinishedPlan =
@@ -1554,7 +1563,6 @@ export async function POST(request: NextRequest) {
             if (looksLikeUnfinishedPlan && iteration < MAX_ITERATIONS) {
               claudeMessages.push({ role: "assistant", content });
 
-              // Tailor the nudge message based on what's missing
               const nudgeText = pendingImageUpload
                 ? "You have gathered the campaign and ad set data. You MUST now call meta_upload_ad_image immediately using the image attached to the user's original message. Do not write any text — call the tool directly now."
                 : "Continue — execute the next tool call now. Do not describe what you are about to do, just call the tool.";
@@ -1562,7 +1570,7 @@ export async function POST(request: NextRequest) {
               claudeMessages.push({
                 role: "user",
                 content: [
-                  ...imageBlocks, // re-inject the image so Claude can access base64 data
+                  ...imageBlocks,
                   { type: "text", text: nudgeText },
                 ] as ClaudeContentBlock[],
               });
@@ -1571,12 +1579,9 @@ export async function POST(request: NextRequest) {
             break;
           }
 
-          // ── Tool use ──────────────────────────────────────────────────────
           if (stop_reason === "tool_use") {
-            // Append assistant turn ONCE before executing tools
             claudeMessages.push({ role: "assistant", content });
 
-            // Collect all tool results first, THEN push them as a single user turn
             const toolResults: ClaudeContentBlock[] = [];
             let justUploadedImage = false;
 
@@ -1607,20 +1612,17 @@ export async function POST(request: NextRequest) {
 
                 resultText = JSON.stringify(result);
                 if (resultText.length > 8000) {
-                  // Truncate oversized tool results — keep first 8000 chars
                   resultText = resultText.slice(0, 8000) + '…(truncated)"}';
                 }
-                
+
                 send({ type: "tool_result", tool: toolBlock.name, platform, text: fmtResult(toolBlock.name, result), data: result });
 
-                
-                // ── FIX: Track successful image uploads across ALL iterations ──
                 if (toolBlock.name === "meta_upload_ad_image") {
                   try {
                     const parsed = JSON.parse(resultText) as Record<string, unknown>;
                     if (parsed?.image_hash && parsed?.success === true) {
                       justUploadedImage = true;
-                      hasUploadedImageSuccessfully = true; // persist across iterations
+                      hasUploadedImageSuccessfully = true;
                     }
                   } catch { /* ignore */ }
                 }
@@ -1630,17 +1632,15 @@ export async function POST(request: NextRequest) {
                 send({ type: "tool_result", tool: toolBlock.name, platform, text: `Error: ${errMsg}`, data: { error: errMsg } });
               }
 
-              // Add this tool's result to the batch
               toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id, content: resultText });
             }
 
-            // Push ALL tool results as a single user turn
             claudeMessages.push({ role: "user", content: toolResults });
 
             if (iteration > 1) {
-              await new Promise(r => setTimeout(r, 1500)); // 1.5s between iterations
+              await new Promise(r => setTimeout(r, 1500));
             }
-            // If we just uploaded an image successfully, inject a hard forcing nudge
+
             if (justUploadedImage) {
               claudeMessages.push({
                 role: "user",
@@ -1653,7 +1653,6 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
-          // Any other stop reason
           break;
         }
 
@@ -1690,6 +1689,7 @@ function fmtCall(name: string, i: ToolInput): string {
     meta_list_campaigns: "Fetching Meta campaigns…",
     meta_get_campaign_insights: `Fetching Meta insights (${i.date_preset})…`,
     meta_create_campaign: `Creating Meta campaign "${i.name}"…`,
+    meta_update_campaign: `Updating Meta campaign ${i.campaign_id}${i.name ? ` → name: "${i.name}"` : ""}${i.status ? ` → status: ${i.status}` : ""}…`,
     meta_update_campaign_budget: `Updating Meta campaign budget → ${metaCents(i.new_daily_budget_cents)}/day`,
     meta_update_campaign_status: `Setting Meta campaign ${i.campaign_id} → ${i.status}`,
     meta_bulk_update_campaign_status: `Bulk setting ${(i.campaign_ids as string[])?.length} Meta campaigns → ${i.status}…`,
@@ -1747,6 +1747,7 @@ function fmtResult(name: string, result: unknown): string {
   const count = Array.isArray(data) ? data.length : undefined;
   if (name === "meta_upload_ad_image") return r?.image_hash ? `Uploaded ✓ hash: ${r.image_hash}` : `Upload failed: ${JSON.stringify(r.raw ?? r)}`;
   if (name === "meta_search_interests") return `Found ${count ?? "?"} interest${count !== 1 ? "s" : ""}`;
+  if (name === "meta_update_campaign") return r?.success ? `Updated ✓ (${Object.keys((r.updated as object) ?? {}).join(", ")})` : `Failed: ${JSON.stringify(r)}`;
   if (name === "meta_list_businesses") return `Found ${r?.count ?? "?"} Business Manager(s)`;
   if (name === "meta_list_business_ad_accounts") return `Found ${(r?.total as number) ?? "?"} ad account(s)`;
   if (name === "meta_list_business_pages") return `Found ${r?.count ?? "?"} Page(s)`;
